@@ -1,23 +1,80 @@
-**Important Prerequisites:**
+# Slack Feeder
 
-1. **Python & slack\_sdk:** Make sure you have Python installed. You'll need to install the official Slack SDK: pip install slack\_sdk.  
-2. **Slack App:** You need to create a Slack app ([https://api.slack.com/apps](https://api.slack.com/apps)). You must have permission within your workspace to do this.  
-3. **Permissions (Scopes):** In your app's settings under "OAuth & Permissions", add the conversations:history scope to "Bot Token Scopes". This allows the app to read message history. Depending on the channel type, you might implicitly need related scopes like channels:read, groups:read, im:read, or mpim:read which conversations:history generally covers, but it's good practice to ensure the bot can access the relevant conversation type.  
-4. **Bot Token:** After adding scopes, install (or reinstall) the app to your workspace. Copy the "Bot User OAuth Token" (it starts with xoxb-). **Treat this token like a password\!**  
-5. **Channel ID:** Find the ID of the channel you want to export. You can usually find this in the Slack URL when viewing the channel (e.g., C0123ABC456).  
-6. **Invite Bot:** If the channel is private, you **must invite the bot user** associated with your Slack app into that channel.
+This project exports conversations from Slack, processes them into a human-readable format, and uploads them to Google Drive. This allows for easy sharing and consumption of Slack conversations by other tools, such as Gemini.
 
-**How to Use:**
+## Features
 
-1. **Replace Placeholders:** Open export\_slack\_history.py and replace "YOUR\_SLACK\_BOT\_TOKEN\_HERE" with your actual Bot User OAuth Token and "YOUR\_CHANNEL\_ID\_HERE" with the target channel's ID.  
-2. **Security:** For better security, avoid hardcoding the token. Use environment variables instead (as commented out in the script).  
-3. **Run:** Execute the script from your terminal: python export\_slack\_history.py  
-4. **Output:** It will fetch messages page by page (respecting rate limits with a small delay) and save all messages chronologically into a JSON file named \<CHANNEL\_ID\>\_history.json.
+-   Export conversation history from public and private channels.
+-   Processes Slack's JSON export into a clean, readable text format.
+-   Creates and organizes conversations in Google Drive.
+-   Shares conversations with the original participants.
+-   Configuration is separated from the code for security.
 
-**Important Considerations:**
+## Setup
 
-* **Authorization:** As the script's warning states, ensure you are authorized to export this data. Respect privacy and your organization's policies.  
-* **Rate Limits:** Slack enforces rate limits. The script includes a basic delay (REQUEST\_DELAY\_SECONDS). If you encounter ratelimited errors, you may need to increase this delay or implement more robust backoff logic.  
-* **Large Histories:** Exporting very large channel histories can take a significant amount of time and generate large files.  
-* **Threads:** This script fetches the main channel messages. Messages within threads are retrieved using a different API method (conversations.replies) for each thread parent message. Modifying the script to fetch all thread replies would add complexity.  
-* **Error Handling:** The script includes basic error handling, but you might want to enhance it depending on your needs (e.g., retrying specific errors).
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/jflowers/slackfeeder.git
+    cd slackfeeder
+    ```
+
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3.  **Configure the application:**
+    -   Copy `config/config.json.example` to `config/config.json`.
+    -   Update `config/config.json` with your Slack bot token and Google Drive credentials.
+    -   **Slack Bot Token:** Create a Slack app and grant it the necessary permissions (`channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `users:read`, `users:read.email`).
+    -   **Google Drive Credentials:** Follow the instructions to create a Google Cloud project and enable the Google Drive API. Download the credentials as a JSON file.
+
+## Usage
+
+### 1. Generate Reference Files
+
+First, you need to generate reference files for the channels and users your bot has access to.
+
+```bash
+python src/main.py --make-ref-files
+```
+
+This will create `config/channels.json` and `config/people.json`. You should review `config/channels.json` and copy the channels you want to export to `config/conversations.json`.
+
+### 2. Export and Upload
+
+To export the conversations and upload them to Google Drive, run the following command:
+
+```bash
+python src/main.py --export-history --upload-to-drive
+```
+
+You can also specify a date range for the export:
+
+```bash
+python src/main.py --export-history --upload-to-drive --start-date "YYYY-MM-DD" --end-date "YYYY-MM-DD"
+```
+
+## How it Works
+
+1.  **`--make-ref-files`**:
+    -   The script connects to the Slack API using your bot token.
+    -   It fetches a list of all channels the bot is a member of.
+    -   It fetches a list of all users in those channels.
+    -   It saves this information to `config/channels.json` and `config/people.json`.
+
+2.  **`--export-history`**:
+    -   The script reads the list of channels to export from `config/conversations.json`.
+    -   For each channel, it fetches the conversation history from the Slack API.
+    -   It processes the history, replacing user IDs with display names and formatting the messages into a readable text file.
+    -   The processed files are saved in the `slack_exports` directory.
+
+3.  **`--upload-to-drive`**:
+    -   The script connects to the Google Drive API.
+    -   For each exported conversation, it creates a new folder in the specified Google Drive folder.
+    -   It uploads the processed text file to the new folder.
+    -   It shares the folder with the participants of the conversation.
+
+## Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request.

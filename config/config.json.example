@@ -1,0 +1,5 @@
+{
+  "slack_bot_token": "xoxb-your-token-here",
+  "google_drive_credentials_file": "path/to/your/credentials.json",
+  "google_drive_folder_id": "your-google-drive-folder-id"
+}
