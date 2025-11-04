@@ -1,7 +1,9 @@
 import logging
 import os
 import platform
+import re
 import shutil
+from typing import Optional
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -11,12 +13,24 @@ from googleapiclient.http import MediaFileUpload
 
 logger = logging.getLogger(__name__)
 
+# Constants
+SECURE_FILE_PERMISSIONS = 0o600
+GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH = 255
+GOOGLE_DRIVE_FOLDER_ID_MIN_LENGTH = 10
+GOOGLE_DRIVE_FOLDER_ID_MAX_LENGTH = 50
+API_TIMEOUT_SECONDS = 30
+
 class GoogleDriveClient:
-    def __init__(self, credentials_file):
+    def __init__(self, credentials_file: str):
+        """Initialize Google Drive client with authentication.
+        
+        Args:
+            credentials_file: Path to Google Drive API credentials JSON file
+        """
         self.creds = self._authenticate(credentials_file)
         self.service = build('drive', 'v3', credentials=self.creds)
 
-    def _escape_drive_query_string(self, value):
+    def _escape_drive_query_string(self, value: str) -> str:
         """Properly escape strings for Google Drive API queries.
         
         Args:
@@ -27,11 +41,33 @@ class GoogleDriveClient:
         """
         if not value:
             return ""
-        # Escape backslashes first
+        # Escape backslashes first (must be first)
         escaped = value.replace("\\", "\\\\")
         # Escape single quotes
         escaped = escaped.replace("'", "\\'")
+        # Escape double quotes if using alternative query format
+        escaped = escaped.replace('"', '\\"')
         return escaped
+    
+    def _validate_folder_id(self, folder_id: Optional[str]) -> bool:
+        """Validate Google Drive folder ID format.
+        
+        Args:
+            folder_id: Folder ID to validate
+            
+        Returns:
+            True if valid format, False otherwise
+        """
+        if not folder_id:
+            return False
+        if not isinstance(folder_id, str):
+            return False
+        if len(folder_id) < GOOGLE_DRIVE_FOLDER_ID_MIN_LENGTH or len(folder_id) > GOOGLE_DRIVE_FOLDER_ID_MAX_LENGTH:
+            return False
+        # Basic format check - Google Drive IDs are alphanumeric with possible underscores/hyphens
+        if not re.match(r'^[a-zA-Z0-9_-]+$', folder_id):
+            return False
+        return True
 
     def _lock_file(self, file_handle):
         """Lock file for exclusive access (platform-specific)."""
@@ -91,15 +127,24 @@ class GoogleDriveClient:
                 finally:
                     self._unlock_file(f)
             
+            # Set secure file permissions on temp file before move (fixes race condition)
+            try:
+                os.chmod(temp_path, SECURE_FILE_PERMISSIONS)
+                logger.debug(f"Set secure permissions for token file: {temp_path}")
+            except OSError as e:
+                logger.warning(f"Could not set permissions on temp token file {temp_path}: {e}")
+            
             # Atomic move
             shutil.move(temp_path, token_path)
             
-            # Set secure file permissions (read/write for owner only)
+            # Verify permissions after move (should already be set, but double-check)
             try:
-                os.chmod(token_path, 0o600)
-                logger.debug(f"Set secure permissions for token file: {token_path}")
+                current_mode = os.stat(token_path).st_mode & 0o777
+                if current_mode != SECURE_FILE_PERMISSIONS:
+                    os.chmod(token_path, SECURE_FILE_PERMISSIONS)
+                    logger.debug(f"Corrected permissions for token file: {token_path}")
             except OSError as e:
-                logger.warning(f"Could not set permissions on token file {token_path}: {e}")
+                logger.warning(f"Could not verify permissions on token file {token_path}: {e}")
             
             logger.debug(f"Token saved successfully to {token_path}")
         except Exception as e:
@@ -122,12 +167,15 @@ class GoogleDriveClient:
         scopes = ['https://www.googleapis.com/auth/drive']
 
         if os.path.exists(token_path):
-            # Check for insecure file permissions
+            # Check for insecure file permissions and enforce security
             try:
-                if os.stat(token_path).st_mode & 0o077:
-                    logger.warning(f"Token file {token_path} has insecure permissions. Recommended: 600 (read/write for owner only).")
+                file_mode = os.stat(token_path).st_mode
+                if file_mode & 0o077:  # Check if group or others have permissions
+                    logger.error(f"Token file {token_path} has insecure permissions. Aborting authentication.")
+                    raise PermissionError(f"Token file permissions are insecure (current mode: {oct(file_mode & 0o777)}). Required: {oct(SECURE_FILE_PERMISSIONS)}")
             except OSError as e:
-                logger.warning(f"Could not check permissions for token file {token_path}: {e}")
+                logger.error(f"Could not check permissions for token file {token_path}: {e}")
+                raise
 
             try:
                 creds = Credentials.from_authorized_user_file(token_path, scopes)
@@ -150,7 +198,7 @@ class GoogleDriveClient:
         
         return creds
 
-    def find_folder(self, folder_name, parent_folder_id=None):
+    def find_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> Optional[str]:
         """Finds an existing folder by name in Google Drive.
         
         Args:
@@ -160,10 +208,17 @@ class GoogleDriveClient:
         Returns:
             Folder ID if found, None otherwise
         """
+        # Validate parent folder ID if provided
+        if parent_folder_id and not self._validate_folder_id(parent_folder_id):
+            logger.warning(f"Invalid parent folder ID format: {parent_folder_id}")
+            return None
+        
         escaped_name = self._escape_drive_query_string(folder_name)
         query = f"name='{escaped_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
         if parent_folder_id:
-            query += f" and '{parent_folder_id}' in parents"
+            # Escape the folder ID to prevent injection
+            escaped_parent_id = self._escape_drive_query_string(parent_folder_id)
+            query += f" and '{escaped_parent_id}' in parents"
         
         try:
             results = self.service.files().list(
@@ -178,7 +233,7 @@ class GoogleDriveClient:
             logger.warning(f"Error searching for folder '{folder_name}': {error}")
         return None
 
-    def create_folder(self, folder_name, parent_folder_id=None):
+    def create_folder(self, folder_name: str, parent_folder_id: Optional[str] = None) -> Optional[str]:
         """Creates a folder in Google Drive, or returns existing folder if found.
         
         Args:
@@ -192,10 +247,15 @@ class GoogleDriveClient:
             logger.error("Folder name cannot be empty")
             return None
         
+        # Validate parent folder ID if provided
+        if parent_folder_id and not self._validate_folder_id(parent_folder_id):
+            logger.error(f"Invalid parent folder ID format: {parent_folder_id}")
+            return None
+        
         # Validate folder name length (Google Drive limit is 255 characters)
-        if len(folder_name) > 255:
-            logger.warning(f"Folder name exceeds 255 characters, truncating: {folder_name[:255]}")
-            folder_name = folder_name[:255].rstrip('. ')
+        if len(folder_name) > GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH:
+            logger.warning(f"Folder name exceeds {GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH} characters, truncating: {folder_name[:GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH]}")
+            folder_name = folder_name[:GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH].rstrip('. ')
         
         # First check if folder already exists
         existing_folder_id = self.find_folder(folder_name, parent_folder_id)
@@ -218,7 +278,7 @@ class GoogleDriveClient:
             logger.error(f"An error occurred while creating folder '{folder_name}': {error}")
             return None
 
-    def upload_file(self, file_path, folder_id, overwrite=True):
+    def upload_file(self, file_path: str, folder_id: str, overwrite: bool = True) -> Optional[str]:
         """Uploads a file to a specific folder in Google Drive.
         
         Args:
@@ -233,12 +293,19 @@ class GoogleDriveClient:
             logger.error(f"File not found: {file_path}")
             return None
         
+        # Validate folder ID
+        if not self._validate_folder_id(folder_id):
+            logger.error(f"Invalid folder ID format: {folder_id}")
+            return None
+        
         file_name = os.path.basename(file_path)
         
         # Check if file already exists
         if overwrite:
             escaped_file_name = self._escape_drive_query_string(file_name)
-            query = f"name='{escaped_file_name}' and '{folder_id}' in parents and trashed=false"
+            # Escape folder_id in query
+            escaped_folder_id = self._escape_drive_query_string(folder_id)
+            query = f"name='{escaped_file_name}' and '{escaped_folder_id}' in parents and trashed=false"
             try:
                 results = self.service.files().list(
                     q=query,
@@ -253,10 +320,14 @@ class GoogleDriveClient:
                         self.service.files().delete(fileId=existing_file_id).execute()
                         logger.info(f"Deleted existing file '{file_name}' before uploading new version")
                     except HttpError as error:
-                        logger.error(f"Failed to delete existing file '{file_name}': {error}")
-                        if overwrite:
-                            # If overwrite is requested and deletion fails, return None
-                            return None
+                        if error.resp.status == 404:
+                            # File doesn't exist, that's fine (might have been deleted concurrently)
+                            logger.debug(f"File '{file_name}' not found for deletion (already gone)")
+                        else:
+                            logger.error(f"Failed to delete existing file '{file_name}': {error}")
+                            if overwrite:
+                                # If overwrite is requested and deletion fails, return None
+                                return None
             except HttpError as error:
                 logger.warning(f"Error checking for existing file '{file_name}': {error}")
         
@@ -274,7 +345,7 @@ class GoogleDriveClient:
             logger.error(f"An error occurred while uploading file '{file_name}': {error}")
             return None
 
-    def share_folder(self, folder_id, email_address):
+    def share_folder(self, folder_id: str, email_address: str) -> bool:
         """Shares a folder with a specific user.
         
         Args:
@@ -284,6 +355,11 @@ class GoogleDriveClient:
         Returns:
             True if successful, False otherwise
         """
+        # Validate folder ID
+        if not self._validate_folder_id(folder_id):
+            logger.error(f"Invalid folder ID format: {folder_id}")
+            return False
+        
         if not email_address or not email_address.strip():
             logger.warning(f"Invalid email address provided: {email_address}")
             return False

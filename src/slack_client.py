@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Dict, List, Optional
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -15,15 +16,39 @@ MAX_RETRIES = 3
 BASE_RETRY_DELAY = 1.2  # seconds
 SHARE_RATE_LIMIT_INTERVAL = 10  # shares per interval
 SHARE_RATE_LIMIT_DELAY = 1.0  # seconds between intervals
+API_TIMEOUT_SECONDS = 30  # seconds
+MAX_RETRY_DELAY_SECONDS = 60  # seconds
 
 class SlackClient:
-    def __init__(self, token):
+    def __init__(self, token: str):
+        """Initialize Slack client.
+        
+        Args:
+            token: Slack bot token (starts with xoxb-)
+            
+        Raises:
+            ValueError: If token is missing or invalid
+        """
         if not token or token == "xoxb-your-token-here":
             raise ValueError("Slack Bot Token is missing or not replaced. Please set the SLACK_BOT_TOKEN.")
-        self.client = WebClient(token=token)
-        self.user_cache = {}
+        self.client = WebClient(token=token, timeout=API_TIMEOUT_SECONDS)
+        self.user_cache: Dict[str, Optional[Dict[str, str]]] = {}
+    
+    def _handle_slack_api_error(self, error: SlackApiError, context: str) -> str:
+        """Centralized Slack API error handling.
+        
+        Args:
+            error: SlackApiError exception
+            context: Context description for logging
+            
+        Returns:
+            Error code string
+        """
+        error_code = error.response.get('error', 'unknown') if hasattr(error, 'response') else 'unknown'
+        logger.error(f"Slack API error {context}: {error_code}")
+        return error_code
 
-    def get_user_info(self, user_id):
+    def get_user_info(self, user_id: str) -> Optional[Dict[str, str]]:
         """Fetches user info and formats it.
         
         Args:
@@ -70,8 +95,7 @@ class SlackClient:
             return user_data
 
         except SlackApiError as e:
-            error_code = e.response.get('error', 'unknown') if hasattr(e, 'response') else 'unknown'
-            logger.error(f"Error fetching info for user {user_id}: {error_code}")
+            self._handle_slack_api_error(e, f"fetching info for user {user_id}")
             self.user_cache[user_id] = None
             return None
         except (KeyError, AttributeError) as e:
@@ -79,7 +103,7 @@ class SlackClient:
             self.user_cache[user_id] = None
             return None
 
-    def get_channel_members(self, channel_id):
+    def get_channel_members(self, channel_id: str) -> List[str]:
         """Fetches all member IDs for a channel, handling pagination.
         
         Args:
@@ -102,8 +126,7 @@ class SlackClient:
                 if not cursor:
                     break
             except SlackApiError as e:
-                error_code = e.response.get('error', 'unknown')
-                logger.error(f"Error getting members for channel {channel_id}: {error_code}")
+                self._handle_slack_api_error(e, f"getting members for channel {channel_id}")
                 logger.warning(f"Ensure the bot is a member of this channel.")
                 return []
         return member_ids
@@ -158,7 +181,7 @@ class SlackClient:
                         all_channels_list.append(channel_obj)
                         
                     except SlackApiError as e:
-                        error_code = e.response.get('error', 'unknown') if hasattr(e, 'response') else 'unknown'
+                        error_code = self._handle_slack_api_error(e, f"fetching details for conversation {channel_id}")
                         failures.append(channel_id)
                         logger.error(f"Could not fetch details for conversation {channel_id}: {error_code}")
                 
@@ -184,7 +207,7 @@ class SlackClient:
         
         return all_channels_list
 
-    def fetch_channel_history(self, channel_id, oldest_ts=None, latest_ts=None):
+    def fetch_channel_history(self, channel_id: str, oldest_ts: Optional[str] = None, latest_ts: Optional[str] = None) -> Optional[List[Dict]]:
         """Fetches the message history for a given Slack channel.
         
         Args:
@@ -198,7 +221,7 @@ class SlackClient:
         all_messages = []
         next_cursor = None
         page_count = 0
-        retry_count = 0
+        retry_count = 0  # Track retries per rate limit event
 
         logger.info(f"Starting message export for channel: {channel_id}")
 
@@ -214,10 +237,11 @@ class SlackClient:
                         oldest=oldest_ts,
                         latest=latest_ts
                     )
+                    # Reset retry count only on successful (non-rate-limited) response
                     retry_count = 0
 
                 except SlackApiError as e:
-                    error_code = e.response.get('error', 'unknown')
+                    error_code = e.response.get('error', 'unknown') if hasattr(e, 'response') else 'unknown'
                     logger.error(f"Slack API Error for channel {channel_id} (Page {page_count}): {error_code}")
                     
                     if error_code == 'ratelimited' and retry_count < MAX_RETRIES:
@@ -225,12 +249,12 @@ class SlackClient:
                         try:
                             retry_after = int(e.response.headers.get('Retry-After', BASE_RETRY_DELAY * (2**retry_count)))
                             # Bound the retry delay (max 60 seconds)
-                            retry_after = min(retry_after, 60)
+                            retry_after = min(retry_after, MAX_RETRY_DELAY_SECONDS)
                         except (ValueError, TypeError):
                             retry_after = BASE_RETRY_DELAY * (2**retry_count)
                         logger.warning(f"Rate limited. Retrying after {retry_after} seconds... (Attempt {retry_count}/{MAX_RETRIES})")
                         time.sleep(retry_after)
-                        page_count -= 1
+                        page_count -= 1  # Don't increment page count for retry
                         continue
                     else:
                         logger.error(f"Stopping export for channel {channel_id} due to API error: {error_code}")

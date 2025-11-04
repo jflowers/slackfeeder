@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Dict, List, Any, Union
 
 def setup_logging():
     """Sets up the logging configuration."""
@@ -15,7 +15,7 @@ def setup_logging():
     )
     return logging.getLogger(__name__)
 
-def sanitize_folder_name(name):
+def sanitize_folder_name(name: str) -> str:
     """Sanitize folder name for Google Drive.
     
     Google Drive folder names have restrictions:
@@ -45,7 +45,7 @@ def sanitize_folder_name(name):
     
     return name
 
-def load_json_file(filepath: str):
+def load_json_file(filepath: str) -> Optional[Union[Dict[str, Any], List[Any]]]:
     """Loads a JSON file and returns its content.
     
     Args:
@@ -67,7 +67,7 @@ def load_json_file(filepath: str):
         logging.error(f"IO error reading file {filepath}: {e}")
         return None
 
-def validate_channels_json(data) -> bool:
+def validate_channels_json(data: Any) -> bool:
     """Validate channels.json structure.
     
     Args:
@@ -82,6 +82,28 @@ def validate_channels_json(data) -> bool:
         raise ValueError("channels.json must contain 'channels' key")
     if not isinstance(data['channels'], list):
         raise ValueError("'channels' must be a list")
+    return True
+
+def validate_people_json(data: Any) -> bool:
+    """Validate people.json structure.
+    
+    Args:
+        data: Parsed JSON data
+        
+    Returns:
+        True if valid, raises ValueError if invalid
+    """
+    if not isinstance(data, dict):
+        raise ValueError("people.json must be a JSON object")
+    if 'people' not in data:
+        raise ValueError("people.json must contain 'people' key")
+    if not isinstance(data['people'], list):
+        raise ValueError("'people' must be a list")
+    for person in data['people']:
+        if not isinstance(person, dict):
+            raise ValueError("Each person must be a dictionary")
+        if 'slackId' not in person:
+            raise ValueError("Each person must have 'slackId'")
     return True
 
 def validate_channel_id(channel_id: str) -> bool:
@@ -99,7 +121,7 @@ def validate_channel_id(channel_id: str) -> bool:
     pattern = r'^[CDG][A-Z0-9]{8,10}$'
     return bool(re.match(pattern, channel_id))
 
-def save_json_file(data, filepath: str):
+def save_json_file(data: Any, filepath: str) -> bool:
     """Saves data to a JSON file.
     
     Args:
@@ -206,3 +228,35 @@ def sanitize_filename(filename):
         filename = "unnamed"
     
     return filename
+
+def format_timestamp(timestamp_str: str) -> str:
+    """Converts a Unix timestamp string to a readable datetime string.
+    
+    Args:
+        timestamp_str: Unix timestamp as string
+        
+    Returns:
+        Formatted datetime string, or original string if conversion fails
+    """
+    try:
+        ts = float(timestamp_str)
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError):
+        return timestamp_str
+
+def validate_email(email: str) -> bool:
+    """Validate email format.
+    
+    Args:
+        email: Email address to validate
+        
+    Returns:
+        True if valid format, False otherwise
+    """
+    if not email or not isinstance(email, str):
+        return False
+    # Basic email validation regex
+    # This pattern matches most common email formats
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email.strip()))

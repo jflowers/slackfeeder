@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
 from src.utils import (
     setup_logging,
     load_json_file,
@@ -15,6 +16,7 @@ from src.utils import (
     validate_channels_json,
     validate_channel_id,
     validate_email,
+    validate_people_json,
 )
 from src.slack_client import SlackClient, SHARE_RATE_LIMIT_INTERVAL, SHARE_RATE_LIMIT_DELAY
 from src.google_drive import GoogleDriveClient
@@ -22,7 +24,14 @@ from slack_sdk.errors import SlackApiError
 
 logger = setup_logging()
 
-def preprocess_history(history_data, slack_client, people_cache=None):
+# Constants
+CONVERSATION_DELAY_SECONDS = 0.5
+LARGE_CONVERSATION_THRESHOLD = 10000
+MAX_FILE_SIZE_MB = int(os.getenv('MAX_EXPORT_FILE_SIZE_MB', '100'))
+MAX_MESSAGES_PER_CONVERSATION = int(os.getenv('MAX_MESSAGES_PER_CONVERSATION', '50000'))
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+def preprocess_history(history_data: List[Dict[str, Any]], slack_client: SlackClient, people_cache: Optional[Dict[str, str]] = None) -> str:
     """Processes Slack history into a human-readable format."""
     threads = {}
     for message in history_data:
@@ -84,7 +93,7 @@ def preprocess_history(history_data, slack_client, people_cache=None):
     
     return "\n".join(output_lines)
 
-def get_conversation_display_name(channel_info, slack_client):
+def get_conversation_display_name(channel_info: Dict[str, Any], slack_client: SlackClient) -> str:
     """Gets the display name for a conversation, handling channels, DMs, and group chats.
     
     Args:
@@ -238,13 +247,28 @@ def main(args):
         people_cache = {}
         people_json = load_json_file("config/people.json")
         if people_json:
-            people_cache = {p["slackId"]: p["displayName"] for p in people_json.get("people", [])}
-            logger.info(f"Loaded {len(people_cache)} users from people.json cache")
+            # Validate people.json structure
+            try:
+                validate_people_json(people_json)
+            except ValueError as e:
+                logger.warning(f"Invalid people.json structure: {e}. Will lookup users on-demand from Slack API.")
+                people_cache = {}
+            else:
+                people_cache = {p["slackId"]: p["displayName"] for p in people_json.get("people", [])}
+                logger.info(f"Loaded {len(people_cache)} users from people.json cache")
         else:
             logger.info("No people.json found - will lookup users on-demand from Slack API")
         
         # Make output directory configurable
         output_dir = os.getenv('SLACK_EXPORT_OUTPUT_DIR', 'slack_exports')
+        
+        # Validate output directory path early to prevent path traversal
+        output_dir = os.path.abspath(output_dir)
+        # Check for path traversal attempts (.. in resolved path or relative path components)
+        if os.path.relpath(output_dir) != output_dir or '..' in os.path.relpath(output_dir):
+            logger.error(f"Invalid output directory path detected: {output_dir}. Aborting.")
+            sys.exit(1)
+        
         create_directory(output_dir)
         
         # Initialize statistics tracking
@@ -269,7 +293,7 @@ def main(args):
             
             # Add small delay between conversations to avoid rate limits
             if idx > 1:
-                time.sleep(0.5)  # Small delay between conversations
+                time.sleep(CONVERSATION_DELAY_SECONDS)  # Small delay between conversations
             
             # Progress indicator
             logger.info(f"[{idx}/{total_conversations}] Processing conversation...")
@@ -312,8 +336,14 @@ def main(args):
             )
 
             if history:
+                # Check for input size limits
+                if len(history) > MAX_MESSAGES_PER_CONVERSATION:
+                    logger.error(f"Conversation {channel_name} exceeds maximum message limit ({MAX_MESSAGES_PER_CONVERSATION}). Skipping.")
+                    stats['skipped'] += 1
+                    continue
+                
                 # Warn about large conversations
-                if len(history) > 10000:
+                if len(history) > LARGE_CONVERSATION_THRESHOLD:
                     logger.warning(f"Large conversation detected ({len(history)} messages). This may take a while and use significant memory.")
                 
                 processed_history = preprocess_history(history, slack_client, people_cache)
@@ -356,9 +386,20 @@ Total Messages: {len(history)}
                         f.flush()
                         os.fsync(f.fileno())  # Ensure data is written to disk
                     
-                    # Verify file was written successfully
-                    if not os.path.exists(output_filepath) or os.path.getsize(output_filepath) == 0:
+                    # Verify file was written successfully and check size
+                    if not os.path.exists(output_filepath):
                         logger.error(f"File write verification failed for {output_filepath}")
+                        stats['failed'] += 1
+                        continue
+                    
+                    file_size = os.path.getsize(output_filepath)
+                    if file_size == 0:
+                        logger.error(f"File write verification failed - empty file: {output_filepath}")
+                        stats['failed'] += 1
+                        continue
+                    
+                    if file_size > MAX_FILE_SIZE_BYTES:
+                        logger.error(f"File size ({file_size / 1024 / 1024:.2f} MB) exceeds maximum ({MAX_FILE_SIZE_MB} MB) for {output_filepath}")
                         stats['failed'] += 1
                         continue
                     
@@ -435,7 +476,9 @@ Total Messages: {len(history)}
         logger.info(f"  Failed: {stats['failed']}")
         if args.upload_to_drive:
             logger.info(f"  Uploaded to Drive: {stats['uploaded']}")
+            logger.info(f"  Upload Failed: {stats['upload_failed']}")
             logger.info(f"  Folders shared: {stats['shared']}")
+            logger.info(f"  Share Failed: {stats['share_failed']}")
         logger.info(f"  Total messages processed: {stats['total_messages']}")
         logger.info("="*80)
 
