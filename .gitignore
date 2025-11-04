@@ -23,6 +23,7 @@ data/
 config/config.json
 slack_exports/
 token.json
+.env
 
 # Google Drive credentials (keep example files in config/)
 *credentials*.json

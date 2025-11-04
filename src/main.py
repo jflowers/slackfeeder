@@ -4,6 +4,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
+from dotenv import load_dotenv
 from src.utils import (
     setup_logging,
     load_json_file,
@@ -21,6 +22,9 @@ from src.utils import (
 from src.slack_client import SlackClient, SHARE_RATE_LIMIT_INTERVAL, SHARE_RATE_LIMIT_DELAY
 from src.google_drive import GoogleDriveClient
 from slack_sdk.errors import SlackApiError
+
+# Load environment variables from .env file if it exists
+load_dotenv()
 
 logger = setup_logging()
 

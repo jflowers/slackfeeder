@@ -30,7 +30,25 @@ pip install -r requirements.txt
 
 This project uses environment variables for configuration, making it safe to host in public repositories while keeping secrets secure.
 
-#### Required Environment Variables
+**Option 1: Using a .env file (Recommended for local development)**
+
+Create a `.env` file in the project root directory:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` and fill in your actual values:
+
+```bash
+SLACK_BOT_TOKEN=xoxb-your-actual-token-here
+GOOGLE_DRIVE_CREDENTIALS_FILE=./path/to/credentials.json
+GOOGLE_DRIVE_FOLDER_ID=your-folder-id-optional
+```
+
+**Option 2: Using environment variables directly**
+
+For CI/CD pipelines or when you prefer to set environment variables directly:
 
 - **`SLACK_BOT_TOKEN`**: Your Slack bot token (starts with `xoxb-`)
   - Create a Slack app at https://api.slack.com/apps
@@ -52,9 +70,6 @@ This project uses environment variables for configuration, making it safe to hos
   - If not set, files will be uploaded to Drive root
   - To find a folder ID, open it in Google Drive and copy the ID from the URL
 
-#### Setting Environment Variables
-
-**For local development:**
 ```bash
 export SLACK_BOT_TOKEN="xoxb-your-token-here"
 export GOOGLE_DRIVE_CREDENTIALS_FILE="./path/to/credentials.json"
@@ -66,6 +81,8 @@ Set these as CI/CD variables in your GitLab project settings under Settings ? CI
 
 **For other CI/CD systems:**
 Set these as environment variables in your build/deployment configuration.
+
+**Note:** If you use a `.env` file for local development, it will be automatically loaded. Environment variables set directly in your shell will override values in `.env`.
 
 ## Usage
 
