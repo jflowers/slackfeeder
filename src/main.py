@@ -83,10 +83,14 @@ def preprocess_history(history_data: List[Dict[str, Any]], slack_client: SlackCl
         
         parent_ts, parent_name, parent_text = messages_in_thread[0]
         formatted_time = format_timestamp(parent_ts)
+        if formatted_time is None:
+            formatted_time = str(parent_ts) if parent_ts else "[Invalid timestamp]"
         output_lines.append(f"[{formatted_time}] {parent_name}: {parent_text}")
         
         for (reply_ts, reply_name, reply_text) in messages_in_thread[1:]:
             formatted_reply_time = format_timestamp(reply_ts)
+            if formatted_reply_time is None:
+                formatted_reply_time = str(reply_ts) if reply_ts else "[Invalid timestamp]"
             output_lines.append(f"    > [{formatted_reply_time}] {reply_name}: {reply_text}")
         
         output_lines.append("\n")
@@ -263,9 +267,9 @@ def main(args):
         output_dir = os.getenv('SLACK_EXPORT_OUTPUT_DIR', 'slack_exports')
         
         # Validate output directory path early to prevent path traversal
-        output_dir = os.path.abspath(output_dir)
-        # Check for path traversal attempts (.. in resolved path or relative path components)
-        if os.path.relpath(output_dir) != output_dir or '..' in os.path.relpath(output_dir):
+        output_dir = os.path.abspath(os.path.normpath(output_dir))
+        # Check for path traversal attempts
+        if '..' in output_dir or not os.path.isabs(output_dir):
             logger.error(f"Invalid output directory path detected: {output_dir}. Aborting.")
             sys.exit(1)
         
@@ -277,7 +281,9 @@ def main(args):
             'skipped': 0,
             'failed': 0,
             'uploaded': 0,
+            'upload_failed': 0,
             'shared': 0,
+            'share_failed': 0,
             'total_messages': 0
         }
         
@@ -423,7 +429,7 @@ Total Messages: {len(history)}
                         file_id = google_drive_client.upload_file(output_filepath, folder_id)
                         if not file_id:
                             logger.error(f"Failed to upload file for {channel_name}. Skipping sharing.")
-                            stats['failed'] += 1
+                            stats['upload_failed'] += 1
                             continue
                         
                         stats['uploaded'] += 1
@@ -436,6 +442,7 @@ Total Messages: {len(history)}
                         
                         shared_emails = set()
                         share_errors = []
+                        share_failures = 0
                         for i, member_id in enumerate(members):
                             # Rate limit: pause every N shares to avoid API limits
                             if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
@@ -457,8 +464,12 @@ Total Messages: {len(history)}
                                             stats['shared'] += 1
                                         else:
                                             share_errors.append(f"{email}: share failed")
+                                            share_failures += 1
                                     except Exception as e:
                                         share_errors.append(f"{email}: {str(e)}")
+                                        share_failures += 1
+                        
+                        stats['share_failed'] += share_failures
                         
                         if share_errors:
                             logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
