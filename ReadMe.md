@@ -4,46 +4,115 @@ This project exports conversations from Slack, processes them into a human-reada
 
 ## Features
 
--   Export conversation history from public and private channels.
--   Processes Slack's JSON export into a clean, readable text format.
--   Creates and organizes conversations in Google Drive.
--   Shares conversations with the original participants.
--   Configuration is separated from the code for security.
+- Export conversation history from public channels, private channels, DMs, and group chats
+- Processes Slack's JSON export into a clean, readable text format with human-readable timestamps
+- Creates and organizes conversations in Google Drive folders named with display names
+- Automatically shares folders with all conversation participants
+- Uses environment variables for secure configuration (perfect for CI/CD pipelines)
+- Handles existing folders gracefully (reuses existing folders, updates files)
 
 ## Setup
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/jflowers/slackfeeder.git
-    cd slackfeeder
-    ```
+### 1. Clone the repository
 
-2.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+```bash
+git clone https://github.com/jflowers/slackfeeder.git
+cd slackfeeder
+```
 
-3.  **Configure the application:**
-    -   Copy `config/config.json.example` to `config/config.json`.
-    -   Update `config/config.json` with your Slack bot token and Google Drive credentials.
-    -   **Slack Bot Token:** Create a Slack app and grant it the necessary permissions (`channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `users:read`, `users:read.email`).
-    -   **Google Drive Credentials:** Follow the instructions to create a Google Cloud project and enable the Google Drive API. Download the credentials as a JSON file.
+### 2. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Configure the application
+
+This project uses environment variables for configuration, making it safe to host in public repositories while keeping secrets secure.
+
+#### Required Environment Variables
+
+- **`SLACK_BOT_TOKEN`**: Your Slack bot token (starts with `xoxb-`)
+  - Create a Slack app at https://api.slack.com/apps
+  - Grant it the following OAuth scopes:
+    - `channels:history`, `channels:read`
+    - `groups:history`, `groups:read`
+    - `im:history`, `im:read`
+    - `mpim:history`, `mpim:read`
+    - `users:read`, `users:read.email`
+  - Install the app to your workspace and copy the bot token
+
+- **`GOOGLE_DRIVE_CREDENTIALS_FILE`**: Path to your Google Drive API credentials JSON file
+  - Create a Google Cloud project at https://console.cloud.google.com
+  - Enable the Google Drive API
+  - Create OAuth 2.0 credentials (Desktop app type)
+  - Download the credentials as a JSON file
+
+- **`GOOGLE_DRIVE_FOLDER_ID`**: (Optional) ID of the Google Drive folder where conversations should be stored
+  - If not set, files will be uploaded to Drive root
+  - To find a folder ID, open it in Google Drive and copy the ID from the URL
+
+#### Setting Environment Variables
+
+**For local development:**
+```bash
+export SLACK_BOT_TOKEN="xoxb-your-token-here"
+export GOOGLE_DRIVE_CREDENTIALS_FILE="./path/to/credentials.json"
+export GOOGLE_DRIVE_FOLDER_ID="your-folder-id"
+```
+
+**For GitLab CI/CD:**
+Set these as CI/CD variables in your GitLab project settings under Settings ? CI/CD ? Variables.
+
+**For other CI/CD systems:**
+Set these as environment variables in your build/deployment configuration.
 
 ## Usage
 
 ### 1. Generate Reference Files
 
-First, you need to generate reference files for the channels and users your bot has access to.
+First, generate reference files for all conversations and users your bot has access to:
 
 ```bash
 python src/main.py --make-ref-files
 ```
 
-This will create `config/channels.json` and `config/people.json`. You should review `config/channels.json` and copy the channels you want to export to `config/conversations.json`.
+This will create:
+- `config/channels.json` - List of all conversations (channels, DMs, group chats) with export flags
+- `config/people.json` - List of all users with their display names and emails (used as a performance cache)
 
-### 2. Export and Upload
+### 2. Configure Conversations to Export
 
-To export the conversations and upload them to Google Drive, run the following command:
+Edit `config/channels.json` to control which conversations to export. By default, all conversations have `"export": true`. Set `"export": false"` to exclude conversations you don't want:
+
+```json
+{
+    "channels": [
+        {
+            "id": "C04KU2JTDJR",
+            "displayName": "team-orange",
+            "export": true
+        },
+        {
+            "id": "C05LGUSIA25",
+            "displayName": "general",
+            "export": false
+        },
+        {
+            "id": "D1234567890"
+        }
+    ]
+}
+```
+
+- If `export` is not specified, it defaults to `true` (will be exported)
+- If `displayName` is not provided, the script will automatically fetch it from Slack (for channels) or construct it from participant names (for DMs and group chats)
+
+**Note:** `people.json` is optional but recommended - it speeds up processing by avoiding API lookups for known users. The system will automatically look up new users on-demand if they're not in the cache.
+
+### 3. Export and Upload
+
+To export conversations and upload them to Google Drive:
 
 ```bash
 python src/main.py --export-history --upload-to-drive
@@ -52,28 +121,59 @@ python src/main.py --export-history --upload-to-drive
 You can also specify a date range for the export:
 
 ```bash
-python src/main.py --export-history --upload-to-drive --start-date "YYYY-MM-DD" --end-date "YYYY-MM-DD"
+python src/main.py --export-history --upload-to-drive --start-date "2024-01-01" --end-date "2024-12-31"
 ```
 
 ## How it Works
 
-1.  **`--make-ref-files`**:
-    -   The script connects to the Slack API using your bot token.
-    -   It fetches a list of all channels the bot is a member of.
-    -   It fetches a list of all users in those channels.
-    -   It saves this information to `config/channels.json` and `config/people.json`.
+1. **`--make-ref-files`**:
+   - Connects to the Slack API using your bot token
+   - Fetches all conversations the bot is a member of (channels, DMs, group chats)
+   - Fetches user information for all participants
+   - Saves this information to `config/channels.json` and `config/people.json`
 
-2.  **`--export-history`**:
-    -   The script reads the list of channels to export from `config/conversations.json`.
-    -   For each channel, it fetches the conversation history from the Slack API.
-    -   It processes the history, replacing user IDs with display names and formatting the messages into a readable text file.
-    -   The processed files are saved in the `slack_exports` directory.
+2. **`--export-history`**:
+   - Reads the list of conversations from `config/channels.json`
+   - Filters to conversations with `export: true` (or missing, which defaults to true)
+   - For each conversation, fetches the message history from the Slack API
+   - Processes the history, replacing user IDs with display names:
+     - Uses `people.json` as a performance cache (optional - speeds up processing)
+     - Looks up users on-demand from Slack API if not in cache
+     - Automatically handles new users who joined after `people.json` was created
+     - Caches API results to minimize API calls
+   - Formats messages with human-readable timestamps and thread structure
+   - Saves processed files to the `slack_exports` directory
 
-3.  **`--upload-to-drive`**:
-    -   The script connects to the Google Drive API.
-    -   For each exported conversation, it creates a new folder in the specified Google Drive folder.
-    -   It uploads the processed text file to the new folder.
-    -   It shares the folder with the participants of the conversation.
+3. **`--upload-to-drive`**:
+   - Connects to the Google Drive API
+   - For each exported conversation, creates a folder (or uses existing) named with the conversation's display name
+   - Uploads the processed text file to the folder (overwrites if exists)
+   - Shares the folder with all conversation participants via email
+
+## Folder Structure
+
+Each conversation gets its own folder in Google Drive, named with the conversation's display name:
+- Channels: Uses the channel name (e.g., `team-orange`)
+- DMs: Uses the other participant's name (e.g., `John Doe`)
+- Group chats: Uses comma-separated participant names (e.g., `John Doe, Jane Smith`)
+
+All participants are automatically added as viewers to the folder, allowing them to access the conversation history.
+
+## Running in CI/CD
+
+This project is designed to run in CI/CD pipelines. Example GitLab CI configuration:
+
+```yaml
+slack-export:
+  image: python:3.11
+  script:
+    - pip install -r requirements.txt
+    - python src/main.py --export-history --upload-to-drive
+  only:
+    - schedules  # Run on schedule
+```
+
+Set the required environment variables in GitLab CI/CD settings.
 
 ## Contributing
 

@@ -19,3 +19,8 @@ Thumbs.db
 data/
 config/config.json
 slack_exports/
+token.json
+
+# Google Drive credentials (keep example files in config/)
+*credentials*.json
+!config/

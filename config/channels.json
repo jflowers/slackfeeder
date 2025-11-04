@@ -2,11 +2,13 @@
     "channels": [
         {
             "id": "C04KU2JTDJR",
-            "displayName": "team-orange"
+            "displayName": "team-orange",
+            "export": true
         },
         {
             "id": "C05LGUSIA25",
-            "displayName": "proj-clasp"
+            "displayName": "proj-clasp",
+            "export": true
         }
     ]
 }

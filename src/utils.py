@@ -60,3 +60,12 @@ def create_directory(dir_path):
             logging.error(f"Failed to create directory {dir_path}: {e}")
             return False
     return True
+
+def format_timestamp(timestamp_str):
+    """Converts a Unix timestamp string to a readable datetime string."""
+    try:
+        ts = float(timestamp_str)
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError):
+        return timestamp_str

@@ -35,8 +35,35 @@ class GoogleDriveClient:
         
         return creds
 
+    def find_folder(self, folder_name, parent_folder_id=None):
+        """Finds an existing folder by name in Google Drive."""
+        # Escape single quotes in folder name for query
+        escaped_name = folder_name.replace("'", "\\'")
+        query = f"name='{escaped_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        if parent_folder_id:
+            query += f" and '{parent_folder_id}' in parents"
+        
+        try:
+            results = self.service.files().list(
+                q=query,
+                fields='files(id, name)',
+                pageSize=1
+            ).execute()
+            items = results.get('files', [])
+            if items:
+                return items[0]['id']
+        except HttpError as error:
+            logger.warning(f"Error searching for folder '{folder_name}': {error}")
+        return None
+
     def create_folder(self, folder_name, parent_folder_id=None):
-        """Creates a folder in Google Drive."""
+        """Creates a folder in Google Drive, or returns existing folder if found."""
+        # First check if folder already exists
+        existing_folder_id = self.find_folder(folder_name, parent_folder_id)
+        if existing_folder_id:
+            logger.info(f"Found existing folder '{folder_name}' with ID: {existing_folder_id}")
+            return existing_folder_id
+        
         file_metadata = {
             'name': folder_name,
             'mimeType': 'application/vnd.google-apps.folder'
@@ -52,11 +79,31 @@ class GoogleDriveClient:
             logger.error(f"An error occurred while creating folder '{folder_name}': {error}")
             return None
 
-    def upload_file(self, file_path, folder_id):
+    def upload_file(self, file_path, folder_id, overwrite=True):
         """Uploads a file to a specific folder in Google Drive."""
         file_name = os.path.basename(file_path)
-        media = MediaFileUpload(file_path, mimetype='text/plain')
         
+        # Check if file already exists
+        if overwrite:
+            # Escape single quotes in file name for query
+            escaped_file_name = file_name.replace("'", "\\'")
+            query = f"name='{escaped_file_name}' and '{folder_id}' in parents and trashed=false"
+            try:
+                results = self.service.files().list(
+                    q=query,
+                    fields='files(id, name)',
+                    pageSize=1
+                ).execute()
+                existing_files = results.get('files', [])
+                if existing_files:
+                    # Delete existing file
+                    existing_file_id = existing_files[0]['id']
+                    self.service.files().delete(fileId=existing_file_id).execute()
+                    logger.info(f"Deleted existing file '{file_name}' before uploading new version")
+            except HttpError as error:
+                logger.warning(f"Error checking for existing file '{file_name}': {error}")
+        
+        media = MediaFileUpload(file_path, mimetype='text/plain')
         file_metadata = {
             'name': file_name,
             'parents': [folder_id]

@@ -75,10 +75,10 @@ class SlackClient:
         return member_ids
 
     def get_all_channels(self):
-        """Fetches all channels the bot is a member of."""
+        """Fetches all channels the bot is a member of (including DMs and group chats)."""
         all_channels_list = []
         channels_cursor = None
-        logger.info("Starting to fetch channels the bot is a member of...")
+        logger.info("Starting to fetch conversations the bot is a member of...")
 
         while True:
             try:
@@ -92,17 +92,17 @@ class SlackClient:
 
                 for channel in channels:
                     if channel.get("is_archived"):
-                        logger.info(f"Skipping archived channel: {channel.get('name')}")
+                        logger.info(f"Skipping archived conversation: {channel.get('name', channel.get('id'))}")
                         continue
                     all_channels_list.append(channel)
 
                 channels_cursor = response.get("response_metadata", {}).get("next_cursor")
                 if not channels_cursor:
-                    logger.info("Fetched all pages of channels.")
+                    logger.info("Fetched all pages of conversations.")
                     break
                     
             except SlackApiError as e:
-                logger.error(f"Error fetching channel list: {e.response['error']}")
+                logger.error(f"Error fetching conversation list: {e.response['error']}")
                 break
         
         return all_channels_list
