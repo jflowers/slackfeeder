@@ -94,7 +94,7 @@ class SlackClient:
             try:
                 response = self.client.conversations_members(
                     channel=channel_id,
-                    limit=self.DEFAULT_PAGE_SIZE,
+                    limit=DEFAULT_PAGE_SIZE,
                     cursor=cursor
                 )
                 member_ids.extend(response.get("members", []))
@@ -128,6 +128,7 @@ class SlackClient:
                 
                 channels = response.get("channels", [])
 
+                failures = []
                 for channel_summary in channels:
                     if channel_summary.get("is_archived"):
                         logger.info(f"Skipping archived conversation: {channel_summary.get('name', channel_summary.get('id'))}")
@@ -150,7 +151,13 @@ class SlackClient:
                         all_channels_list.append(channel_obj)
                         
                     except SlackApiError as e:
-                        logger.error(f"Could not fetch details for conversation {channel_summary.get('id')}: {e.response['error']}")
+                        channel_id = channel_summary.get('id', 'unknown')
+                        error_code = e.response.get('error', 'unknown') if hasattr(e, 'response') else 'unknown'
+                        failures.append(channel_id)
+                        logger.error(f"Could not fetch details for conversation {channel_id}: {error_code}")
+                
+                if failures:
+                    logger.warning(f"Failed to fetch details for {len(failures)} out of {len(channels)} conversations")
 
                 channels_cursor = response.get("response_metadata", {}).get("next_cursor")
                 if not channels_cursor:
@@ -192,7 +199,7 @@ class SlackClient:
                 try:
                     response = self.client.conversations_history(
                         channel=channel_id,
-                        limit=self.DEFAULT_PAGE_SIZE,
+                        limit=DEFAULT_PAGE_SIZE,
                         cursor=next_cursor,
                         oldest=oldest_ts,
                         latest=latest_ts
@@ -203,10 +210,15 @@ class SlackClient:
                     error_code = e.response.get('error', 'unknown')
                     logger.error(f"Slack API Error for channel {channel_id} (Page {page_count}): {error_code}")
                     
-                    if error_code == 'ratelimited' and retry_count < self.MAX_RETRIES:
+                    if error_code == 'ratelimited' and retry_count < MAX_RETRIES:
                         retry_count += 1
-                        retry_after = int(e.response.headers.get('Retry-After', self.BASE_RETRY_DELAY * (2**retry_count)))
-                        logger.warning(f"Rate limited. Retrying after {retry_after} seconds... (Attempt {retry_count}/{self.MAX_RETRIES})")
+                        try:
+                            retry_after = int(e.response.headers.get('Retry-After', BASE_RETRY_DELAY * (2**retry_count)))
+                            # Bound the retry delay (max 60 seconds)
+                            retry_after = min(retry_after, 60)
+                        except (ValueError, TypeError):
+                            retry_after = BASE_RETRY_DELAY * (2**retry_count)
+                        logger.warning(f"Rate limited. Retrying after {retry_after} seconds... (Attempt {retry_count}/{MAX_RETRIES})")
                         time.sleep(retry_after)
                         page_count -= 1
                         continue
@@ -235,7 +247,7 @@ class SlackClient:
                     logger.info(f"Reached the end of the message history for channel {channel_id}.")
                     break
 
-                time.sleep(self.DEFAULT_RATE_LIMIT_DELAY)
+                time.sleep(DEFAULT_RATE_LIMIT_DELAY)
 
         except (KeyError, AttributeError) as e:
             logger.error(f"Unexpected error in pagination loop for channel {channel_id}: {e}")

@@ -96,14 +96,40 @@ def validate_channel_id(channel_id: str) -> bool:
     pattern = r'^[CDG][A-Z0-9]{8,10}$'
     return bool(re.match(pattern, channel_id))
 
-def save_json_file(data, filepath):
-    """Saves data to a JSON file."""
+def save_json_file(data, filepath: str):
+    """Saves data to a JSON file.
+    
+    Args:
+        data: Data to save (dict, list, etc.)
+        filepath: Path where to save the file
+        
+    Returns:
+        True if successful, False otherwise
+    """
     try:
+        # Ensure directory exists
+        dir_path = os.path.dirname(filepath)
+        if dir_path and not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+        
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
+            f.flush()
+            os.fsync(f.fileno())  # Ensure data is written to disk
+        
+        # Verify file was written successfully
+        if not os.path.exists(filepath):
+            logging.error(f"File write verification failed for {filepath}")
+            return False
+        
         logging.info(f"Successfully saved data to {filepath}")
+        return True
     except IOError as e:
         logging.error(f"Failed to write to file {filepath}: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error saving file {filepath}: {e}")
+        return False
 
 def convert_date_to_timestamp(date_str: Optional[str], is_end_date: bool = False) -> Optional[str]:
     """Converts YYYY-MM-DD or YYYY-MM-DD HH:MM:SS string (assumed UTC) to Unix timestamp string.

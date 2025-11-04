@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 from src.utils import (
     setup_logging,
     load_json_file,
@@ -12,7 +13,7 @@ from src.utils import (
     validate_channels_json,
     validate_channel_id,
 )
-from src.slack_client import SlackClient
+from src.slack_client import SlackClient, SHARE_RATE_LIMIT_INTERVAL, SHARE_RATE_LIMIT_DELAY
 from src.google_drive import GoogleDriveClient
 from slack_sdk.errors import SlackApiError
 
@@ -48,9 +49,16 @@ def preprocess_history(history_data, slack_client, people_cache=None):
         user_id = message.get('user')
         name = "Unknown User"
         if user_id:
-            user_info = slack_client.get_user_info(user_id)
-            if user_info:
-                name = user_info.get("displayName", message.get('username', user_id))
+            # Check cache first
+            if people_cache and user_id in people_cache:
+                name = people_cache[user_id]
+            else:
+                user_info = slack_client.get_user_info(user_id)
+                if user_info:
+                    name = user_info.get("displayName", message.get('username', user_id))
+                    # Update cache for future use
+                    if people_cache is not None:
+                        people_cache[user_id] = name
         
         text = text.replace('\n', '\n    ')
         
@@ -118,12 +126,22 @@ def main(args):
         logger.error("GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required and cannot be empty. Exiting.")
         sys.exit(1)
     
-    # Validate credentials file exists and is a file
-    if not os.path.exists(google_drive_credentials_file):
-        logger.error(f"Credentials file not found: {google_drive_credentials_file}")
-        sys.exit(1)
-    if not os.path.isfile(google_drive_credentials_file):
-        logger.error(f"Credentials path is not a file: {google_drive_credentials_file}")
+    # Validate and sanitize credentials file path
+    try:
+        # Resolve to absolute path to prevent traversal
+        google_drive_credentials_file = os.path.abspath(os.path.expanduser(google_drive_credentials_file))
+        if not os.path.exists(google_drive_credentials_file):
+            logger.error(f"Credentials file not found: {google_drive_credentials_file}")
+            sys.exit(1)
+        if not os.path.isfile(google_drive_credentials_file):
+            logger.error(f"Credentials path is not a file: {google_drive_credentials_file}")
+            sys.exit(1)
+        # Check if file is readable
+        if not os.access(google_drive_credentials_file, os.R_OK):
+            logger.error(f"Credentials file is not readable: {google_drive_credentials_file}")
+            sys.exit(1)
+    except (OSError, ValueError) as e:
+        logger.error(f"Invalid credentials file path: {e}")
         sys.exit(1)
     
     if not google_drive_folder_id:
@@ -279,13 +297,16 @@ def main(args):
                         
                         # Share with members (with rate limiting)
                         members = slack_client.get_channel_members(channel_id)
+                        if not members:
+                            logger.warning(f"No members found for {channel_name}. Skipping sharing.")
+                            continue
+                        
                         shared_emails = set()
                         share_errors = []
-                        import time
                         for i, member_id in enumerate(members):
                             # Rate limit: pause every N shares to avoid API limits
-                            if i > 0 and i % SlackClient.SHARE_RATE_LIMIT_INTERVAL == 0:
-                                time.sleep(SlackClient.SHARE_RATE_LIMIT_DELAY)
+                            if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
+                                time.sleep(SHARE_RATE_LIMIT_DELAY)
                             
                             user_info = slack_client.get_user_info(member_id)
                             if user_info and user_info.get("email"):

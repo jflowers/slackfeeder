@@ -1,7 +1,7 @@
 import logging
 import os
+import platform
 import shutil
-import fcntl
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -33,6 +33,37 @@ class GoogleDriveClient:
         escaped = escaped.replace("'", "\\'")
         return escaped
 
+    def _lock_file(self, file_handle):
+        """Lock file for exclusive access (platform-specific)."""
+        if platform.system() == 'Windows':
+            try:
+                import msvcrt
+                msvcrt.locking(file_handle.fileno(), msvcrt.LK_LOCK, 1)
+            except ImportError:
+                # msvcrt not available, skip locking on Windows
+                logger.debug("File locking not available on this Windows system")
+        else:
+            try:
+                import fcntl
+                fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX)
+            except ImportError:
+                logger.debug("fcntl not available, skipping file lock")
+
+    def _unlock_file(self, file_handle):
+        """Unlock file (platform-specific)."""
+        if platform.system() == 'Windows':
+            try:
+                import msvcrt
+                msvcrt.locking(file_handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except ImportError:
+                pass
+        else:
+            try:
+                import fcntl
+                fcntl.flock(file_handle.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                pass
+
     def _save_token_safely(self, token_path, creds):
         """Safely write token file with locking to prevent corruption.
         
@@ -44,17 +75,21 @@ class GoogleDriveClient:
         try:
             # Ensure directory exists
             token_dir = os.path.dirname(token_path) if os.path.dirname(token_path) else '.'
-            os.makedirs(token_dir, exist_ok=True)
+            try:
+                os.makedirs(token_dir, exist_ok=True)
+            except OSError as e:
+                logger.error(f"Failed to create token directory {token_dir}: {e}")
+                raise
             
             with open(temp_path, 'w') as f:
                 # Lock file for exclusive write
                 try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                    self._lock_file(f)
                     f.write(creds.to_json())
                     f.flush()
                     os.fsync(f.fileno())  # Ensure data is written to disk
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    self._unlock_file(f)
             
             # Atomic move
             shutil.move(temp_path, token_path)

@@ -11,6 +11,9 @@ venv/
 .vscode/
 .idea/
 
+# AI
+CODE_REVIEW_REPORT.md
+
 # OS-specific
 .DS_Store
 Thumbs.db
