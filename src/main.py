@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 from src.utils import (
     setup_logging,
     load_json_file,
@@ -7,6 +8,9 @@ from src.utils import (
     convert_date_to_timestamp,
     create_directory,
     format_timestamp,
+    sanitize_filename,
+    validate_channels_json,
+    validate_channel_id,
 )
 from src.slack_client import SlackClient
 from src.google_drive import GoogleDriveClient
@@ -110,24 +114,32 @@ def get_conversation_display_name(channel_info, slack_client):
         
         # For channels, use name or fallback to ID
         return channel.get("name") or channel_id
-    except Exception as e:
+    except (KeyError, ValueError, AttributeError) as e:
         logger.warning(f"Could not fetch conversation info for {channel_id}: {e}")
+        return channel_id
+    except Exception as e:
+        logger.error(f"Unexpected error fetching conversation info for {channel_id}: {e}", exc_info=True)
         return channel_id
 
 def main(args):
     """Main function to run the Slack history export and upload process."""
-    # Get configuration from environment variables
-    slack_bot_token = os.getenv("SLACK_BOT_TOKEN")
-    google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE")
-    google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    # Get configuration from environment variables with validation
+    slack_bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+    google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
     
     if not slack_bot_token:
-        logger.error("SLACK_BOT_TOKEN environment variable is required. Exiting.")
-        return
+        logger.error("SLACK_BOT_TOKEN environment variable is required and cannot be empty. Exiting.")
+        sys.exit(1)
     
     if not google_drive_credentials_file:
-        logger.error("GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required. Exiting.")
-        return
+        logger.error("GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required and cannot be empty. Exiting.")
+        sys.exit(1)
+    
+    # Validate credentials file exists
+    if not os.path.exists(google_drive_credentials_file):
+        logger.error(f"Credentials file not found: {google_drive_credentials_file}")
+        sys.exit(1)
     
     if not google_drive_folder_id:
         logger.warning("GOOGLE_DRIVE_FOLDER_ID not set. Files will be uploaded to Drive root.")
@@ -179,6 +191,13 @@ def main(args):
             logger.info("Run with --make-ref-files first to generate channels.json")
             return
 
+        # Validate JSON structure
+        try:
+            validate_channels_json(channels_data)
+        except ValueError as e:
+            logger.error(f"Invalid channels.json structure: {e}")
+            return
+
         # Filter to only conversations marked for export (export defaults to True if not specified)
         channels_to_export = [
             ch for ch in channels_data.get("channels", [])
@@ -205,43 +224,103 @@ def main(args):
 
         for channel_info in channels_to_export:
             channel_id = channel_info.get("id")
+            
+            # Validate channel ID format
+            if not channel_id or not validate_channel_id(channel_id):
+                logger.warning(f"Invalid channel ID format: {channel_id}. Skipping.")
+                continue
+            
             channel_name = get_conversation_display_name(channel_info, slack_client)
             
             logger.info(f"--- Processing conversation: {channel_name} ({channel_id}) ---")
 
+            # Validate timestamps if provided
+            oldest_ts = convert_date_to_timestamp(args.start_date)
+            latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
+            if args.start_date and oldest_ts is None:
+                logger.error(f"Invalid start date format: {args.start_date}")
+                continue
+            if args.end_date and latest_ts is None:
+                logger.error(f"Invalid end date format: {args.end_date}")
+                continue
+
             history = slack_client.fetch_channel_history(
                 channel_id,
-                oldest_ts=convert_date_to_timestamp(args.start_date),
-                latest_ts=convert_date_to_timestamp(args.end_date, is_end_date=True)
+                oldest_ts=oldest_ts,
+                latest_ts=latest_ts
             )
 
             if history:
                 processed_history = preprocess_history(history, slack_client, people_cache)
-                output_filename = f"{channel_name}_history.txt"
+                
+                # Sanitize filename to prevent path traversal
+                safe_channel_name = sanitize_filename(channel_name)
+                output_filename = f"{safe_channel_name}_history.txt"
                 output_filepath = os.path.join(output_dir, output_filename)
                 
-                with open(output_filepath, 'w', encoding='utf-8') as f:
-                    f.write(processed_history)
+                # Additional safety check - ensure path is within output_dir
+                abs_output_dir = os.path.abspath(output_dir)
+                abs_output_filepath = os.path.abspath(output_filepath)
+                if not abs_output_filepath.startswith(abs_output_dir):
+                    logger.error(f"Invalid file path detected: {output_filepath}. Skipping.")
+                    continue
                 
-                logger.info(f"Saved processed history to {output_filepath}")
+                try:
+                    with open(output_filepath, 'w', encoding='utf-8') as f:
+                        f.write(processed_history)
+                        f.flush()
+                        os.fsync(f.fileno())  # Ensure data is written to disk
+                    
+                    # Verify file was written successfully
+                    if not os.path.exists(output_filepath) or os.path.getsize(output_filepath) == 0:
+                        logger.error(f"File write verification failed for {output_filepath}")
+                        continue
+                    
+                    logger.info(f"Saved processed history to {output_filepath}")
+                except IOError as e:
+                    logger.error(f"Failed to write file {output_filepath}: {e}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Unexpected error writing file {output_filepath}: {e}", exc_info=True)
+                    continue
 
                 if args.upload_to_drive:
                     folder_id = google_drive_client.create_folder(channel_name, google_drive_folder_id)
                     if folder_id:
-                        google_drive_client.upload_file(output_filepath, folder_id)
+                        file_id = google_drive_client.upload_file(output_filepath, folder_id)
+                        if not file_id:
+                            logger.error(f"Failed to upload file for {channel_name}. Skipping sharing.")
+                            continue
                         
-                        # Share with members
+                        # Share with members (with rate limiting)
                         members = slack_client.get_channel_members(channel_id)
                         shared_emails = set()
-                        for member_id in members:
+                        share_errors = []
+                        import time
+                        for i, member_id in enumerate(members):
+                            # Rate limit: pause every N shares to avoid API limits
+                            if i > 0 and i % SlackClient.SHARE_RATE_LIMIT_INTERVAL == 0:
+                                time.sleep(SlackClient.SHARE_RATE_LIMIT_DELAY)
+                            
                             user_info = slack_client.get_user_info(member_id)
                             if user_info and user_info.get("email"):
                                 email = user_info["email"]
                                 if email not in shared_emails:
-                                    google_drive_client.share_folder(folder_id, email)
-                                    shared_emails.add(email)
+                                    try:
+                                        shared = google_drive_client.share_folder(folder_id, email)
+                                        if shared:
+                                            shared_emails.add(email)
+                                        else:
+                                            share_errors.append(f"{email}: share failed")
+                                    except Exception as e:
+                                        share_errors.append(f"{email}: {str(e)}")
+                        
+                        if share_errors:
+                            logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
                         
                         logger.info(f"Shared folder '{channel_name}' with {len(shared_emails)} participants")
+            else:
+                logger.warning(f"No history found for {channel_name} ({channel_id})")
 
 
 if __name__ == "__main__":

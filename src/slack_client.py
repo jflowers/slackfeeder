@@ -8,6 +8,15 @@ from src.utils import save_json_file
 logger = logging.getLogger(__name__)
 
 class SlackClient:
+    # Constants for API pagination and rate limiting
+    DEFAULT_PAGE_SIZE = 200
+    CONVERSATIONS_PAGE_SIZE = 100
+    DEFAULT_RATE_LIMIT_DELAY = 1.2  # seconds
+    MAX_RETRIES = 3
+    BASE_RETRY_DELAY = 1.2  # seconds
+    SHARE_RATE_LIMIT_INTERVAL = 10  # shares per interval
+    SHARE_RATE_LIMIT_DELAY = 1.0  # seconds between intervals
+    
     def __init__(self, token):
         if not token or token == "xoxb-your-token-here":
             raise ValueError("Slack Bot Token is missing or not replaced. Please set the SLACK_BOT_TOKEN.")
@@ -15,13 +24,25 @@ class SlackClient:
         self.user_cache = {}
 
     def get_user_info(self, user_id):
-        """Fetches user info and formats it."""
+        """Fetches user info and formats it.
+        
+        Args:
+            user_id: Slack user ID
+            
+        Returns:
+            Dict with slackId, email, displayName, or None if error/bot
+        """
         if user_id in self.user_cache:
             return self.user_cache[user_id]
             
         try:
             response = self.client.users_info(user=user_id)
-            user = response["user"]
+            user = response.get("user")
+            
+            if not user:
+                logger.warning(f"No user data returned for {user_id}")
+                self.user_cache[user_id] = None
+                return None
 
             if user.get("is_bot"):
                 logger.info(f"Skipping bot user: {user.get('name')}")
@@ -49,33 +70,50 @@ class SlackClient:
             return user_data
 
         except SlackApiError as e:
-            logger.error(f"Error fetching info for user {user_id}: {e.response['error']}")
+            error_code = e.response.get('error', 'unknown') if hasattr(e, 'response') else 'unknown'
+            logger.error(f"Error fetching info for user {user_id}: {error_code}")
+            self.user_cache[user_id] = None
+            return None
+        except (KeyError, AttributeError) as e:
+            logger.error(f"Unexpected response format for user {user_id}: {e}")
             self.user_cache[user_id] = None
             return None
 
     def get_channel_members(self, channel_id):
-        """Fetches all member IDs for a channel, handling pagination."""
+        """Fetches all member IDs for a channel, handling pagination.
+        
+        Args:
+            channel_id: Slack channel ID
+            
+        Returns:
+            List of member user IDs
+        """
         member_ids = []
         cursor = None
         while True:
             try:
                 response = self.client.conversations_members(
                     channel=channel_id,
-                    limit=200,
+                    limit=self.DEFAULT_PAGE_SIZE,
                     cursor=cursor
                 )
-                member_ids.extend(response["members"])
+                member_ids.extend(response.get("members", []))
                 cursor = response.get("response_metadata", {}).get("next_cursor")
                 if not cursor:
                     break
             except SlackApiError as e:
-                logger.error(f"Error getting members for channel {channel_id}: {e.response['error']}")
+                error_code = e.response.get('error', 'unknown')
+                logger.error(f"Error getting members for channel {channel_id}: {error_code}")
                 logger.warning(f"Ensure the bot is a member of this channel.")
                 return []
         return member_ids
 
     def get_all_channels(self):
-        """Fetches all channels the bot is a member of (including DMs and group chats)."""
+        """Fetches all channels the bot is a member of (including DMs and group chats).
+        
+        Returns:
+            List of conversation objects
+        """
         all_channels_list = []
         channels_cursor = None
         logger.info("Starting to fetch conversations the bot is a member of...")
@@ -84,11 +122,11 @@ class SlackClient:
             try:
                 response = self.client.users_conversations(
                     types="public_channel,private_channel,mpim,im",
-                    limit=100,
+                    limit=self.CONVERSATIONS_PAGE_SIZE,
                     cursor=channels_cursor
                 )
                 
-                channels = response["channels"]
+                channels = response.get("channels", [])
 
                 for channel in channels:
                     if channel.get("is_archived"):
@@ -102,18 +140,30 @@ class SlackClient:
                     break
                     
             except SlackApiError as e:
-                logger.error(f"Error fetching conversation list: {e.response['error']}")
+                error_code = e.response.get('error', 'unknown')
+                logger.error(f"Error fetching conversation list: {error_code}")
+                break
+            except (KeyError, AttributeError) as e:
+                logger.error(f"Unexpected response format: {e}")
                 break
         
         return all_channels_list
 
     def fetch_channel_history(self, channel_id, oldest_ts=None, latest_ts=None):
-        """Fetches the message history for a given Slack channel."""
+        """Fetches the message history for a given Slack channel.
+        
+        Args:
+            channel_id: Slack channel ID
+            oldest_ts: Optional oldest timestamp (Unix timestamp string)
+            latest_ts: Optional latest timestamp (Unix timestamp string)
+            
+        Returns:
+            List of message objects sorted by timestamp, or None on error
+        """
         all_messages = []
         next_cursor = None
         page_count = 0
         retry_count = 0
-        max_retries = 3
 
         logger.info(f"Starting message export for channel: {channel_id}")
 
@@ -124,7 +174,7 @@ class SlackClient:
                 try:
                     response = self.client.conversations_history(
                         channel=channel_id,
-                        limit=200,
+                        limit=self.DEFAULT_PAGE_SIZE,
                         cursor=next_cursor,
                         oldest=oldest_ts,
                         latest=latest_ts
@@ -132,21 +182,26 @@ class SlackClient:
                     retry_count = 0
 
                 except SlackApiError as e:
-                    logger.error(f"Slack API Error for channel {channel_id} (Page {page_count}): {e.response['error']}")
-                    if e.response['error'] == 'ratelimited' and retry_count < max_retries:
+                    error_code = e.response.get('error', 'unknown')
+                    logger.error(f"Slack API Error for channel {channel_id} (Page {page_count}): {error_code}")
+                    
+                    if error_code == 'ratelimited' and retry_count < self.MAX_RETRIES:
                         retry_count += 1
-                        retry_after = int(e.response.headers.get('Retry-After', 1.2 * (2**retry_count)))
-                        logger.warning(f"Rate limited. Retrying after {retry_after} seconds... (Attempt {retry_count}/{max_retries})")
+                        retry_after = int(e.response.headers.get('Retry-After', self.BASE_RETRY_DELAY * (2**retry_count)))
+                        logger.warning(f"Rate limited. Retrying after {retry_after} seconds... (Attempt {retry_count}/{self.MAX_RETRIES})")
                         time.sleep(retry_after)
                         page_count -= 1
                         continue
                     else:
-                        logger.error(f"Stopping export for channel {channel_id} due to unhandled API error: {e.response['error']}")
+                        logger.error(f"Stopping export for channel {channel_id} due to API error: {error_code}")
                         return None
 
+                except (KeyError, AttributeError) as e:
+                    logger.error(f"Unexpected response format for channel {channel_id}: {e}")
+                    return None
                 except Exception as e:
-                     logger.error(f"An unexpected error occurred during API call for channel {channel_id}: {e}", exc_info=True)
-                     return None
+                    logger.error(f"An unexpected error occurred during API call for channel {channel_id}: {e}", exc_info=True)
+                    return None
 
                 messages = response.get("messages", [])
                 all_messages.extend(messages)
@@ -162,8 +217,11 @@ class SlackClient:
                     logger.info(f"Reached the end of the message history for channel {channel_id}.")
                     break
 
-                time.sleep(1.2)
+                time.sleep(self.DEFAULT_RATE_LIMIT_DELAY)
 
+        except (KeyError, AttributeError) as e:
+            logger.error(f"Unexpected error in pagination loop for channel {channel_id}: {e}")
+            return None
         except Exception as e:
             logger.error(f"An unexpected error occurred during pagination loop for channel {channel_id}: {e}", exc_info=True)
             return None
