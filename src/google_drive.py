@@ -3,6 +3,7 @@ import os
 import platform
 import re
 import shutil
+import time
 from typing import Optional
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -19,6 +20,10 @@ GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH = 255
 GOOGLE_DRIVE_FOLDER_ID_MIN_LENGTH = 10
 GOOGLE_DRIVE_FOLDER_ID_MAX_LENGTH = 50
 API_TIMEOUT_SECONDS = 30
+# Rate limiting for Google Drive API (requests per 100 seconds)
+GOOGLE_DRIVE_RATE_LIMIT_DELAY = 0.5  # seconds between API calls
+GOOGLE_DRIVE_BATCH_SIZE = 10  # number of calls before adding extra delay
+GOOGLE_DRIVE_BATCH_DELAY = 1.0  # extra delay after batch
 
 class GoogleDriveClient:
     def __init__(self, credentials_file: str):
@@ -26,9 +31,23 @@ class GoogleDriveClient:
         
         Args:
             credentials_file: Path to Google Drive API credentials JSON file
+            
+        Raises:
+            Exception: If authentication fails or service cannot be built
         """
-        self.creds = self._authenticate(credentials_file)
-        self.service = build('drive', 'v3', credentials=self.creds)
+        try:
+            self.creds = self._authenticate(credentials_file)
+            if not self.creds:
+                raise ValueError("Failed to obtain valid credentials")
+            self.service = build('drive', 'v3', credentials=self.creds)
+            if not self.service:
+                raise ValueError("Failed to build Google Drive service")
+            # Rate limiting state
+            self._last_api_call_time = 0.0
+            self._api_call_count = 0
+        except Exception as e:
+            logger.error(f"Failed to initialize Google Drive client: {e}")
+            raise
 
     def _escape_drive_query_string(self, value: str) -> str:
         """Properly escape strings for Google Drive API queries.
@@ -156,6 +175,24 @@ class GoogleDriveClient:
                     pass
             raise
 
+    def _rate_limit(self):
+        """Apply rate limiting for Google Drive API calls."""
+        current_time = time.time()
+        time_since_last_call = current_time - self._last_api_call_time
+        
+        # Always add base delay between calls
+        if time_since_last_call < GOOGLE_DRIVE_RATE_LIMIT_DELAY:
+            sleep_time = GOOGLE_DRIVE_RATE_LIMIT_DELAY - time_since_last_call
+            time.sleep(sleep_time)
+        
+        # After batch_size calls, add extra delay
+        self._api_call_count += 1
+        if self._api_call_count >= GOOGLE_DRIVE_BATCH_SIZE:
+            time.sleep(GOOGLE_DRIVE_BATCH_DELAY)
+            self._api_call_count = 0
+        
+        self._last_api_call_time = time.time()
+
     def _authenticate(self, credentials_file):
         """Authenticates with Google Drive API."""
         creds = None
@@ -221,6 +258,7 @@ class GoogleDriveClient:
             query += f" and '{escaped_parent_id}' in parents"
         
         try:
+            self._rate_limit()
             results = self.service.files().list(
                 q=query,
                 fields='files(id, name)',
@@ -271,6 +309,7 @@ class GoogleDriveClient:
             file_metadata['parents'] = [parent_folder_id]
         
         try:
+            self._rate_limit()
             folder = self.service.files().create(body=file_metadata, fields='id').execute()
             logger.info(f"Created folder '{folder_name}' with ID: {folder.get('id')}")
             return folder.get('id')
@@ -317,6 +356,7 @@ class GoogleDriveClient:
                     # Delete existing file
                     try:
                         existing_file_id = existing_files[0]['id']
+                        self._rate_limit()
                         self.service.files().delete(fileId=existing_file_id).execute()
                         logger.info(f"Deleted existing file '{file_name}' before uploading new version")
                     except HttpError as error:
@@ -365,6 +405,7 @@ class GoogleDriveClient:
             return False
         
         try:
+            self._rate_limit()
             permission = {
                 'type': 'user',
                 'role': 'reader',

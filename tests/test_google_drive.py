@@ -83,6 +83,7 @@ class TestFindFolder:
         # Mock authentication
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             result = client.find_folder("Test Folder")
             assert result == "folder123"
     
@@ -96,6 +97,7 @@ class TestFindFolder:
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             result = client.find_folder("Nonexistent")
             assert result is None
     
@@ -106,6 +108,7 @@ class TestFindFolder:
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             result = client.find_folder("Test Folder", parent_folder_id="invalid!")
             assert result is None
     
@@ -118,6 +121,7 @@ class TestFindFolder:
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             result = client.find_folder("Test Folder")
             assert result is None
 
@@ -142,6 +146,7 @@ class TestCreateFolder:
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             result = client.create_folder("New Folder")
             assert result == "new_folder123"
     
@@ -155,6 +160,7 @@ class TestCreateFolder:
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             result = client.create_folder("Existing Folder")
             assert result == "existing_folder123"
             # Verify create was not called
@@ -166,25 +172,30 @@ class TestCreateFolder:
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
-            client = GoogleDriveClient("fake_credentials.json")
+            with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+                with patch('src.google_drive.build', return_value=Mock()):
+                    client = GoogleDriveClient("fake_credentials.json")
             result = client.create_folder("")
             assert result is None
     
     @patch('src.google_drive.build')
     def test_create_folder_truncates_long_name(self, mock_build):
         mock_service = Mock()
+        # Mock find_folder to return None (folder doesn't exist)
+        mock_list_result = Mock()
+        mock_list_result.execute.return_value = {"files": []}  # Empty list
+        mock_service.files.return_value.list.return_value = mock_list_result
+        
+        # Mock create result
         mock_create_result = Mock()
         mock_create_result.execute.return_value = {"id": "folder123"}
         mock_service.files.return_value.create.return_value = mock_create_result
-        
-        mock_list_result = Mock()
-        mock_list_result.execute.return_value = {"files": []}
-        mock_service.files.return_value.list.return_value = mock_list_result
         
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             long_name = "a" * 300
             result = client.create_folder(long_name)
             assert result == "folder123"
@@ -207,13 +218,14 @@ class TestUploadFile:
         mock_service.files.return_value.create.return_value = mock_create_result
         
         mock_list_result = Mock()
-        mock_list_result.execute.return_value = {"files": []}
+        mock_list_result.execute.return_value = {"files": []}  # Empty list, not a Mock
         mock_service.files.return_value.list.return_value = mock_list_result
         
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
             client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service  # Set the service directly
             # Use a valid folder ID format
             result = client.upload_file("/path/to/test.txt", "0B1234567890abcdef")
             assert result == "file123"
@@ -225,7 +237,9 @@ class TestUploadFile:
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
-            client = GoogleDriveClient("fake_credentials.json")
+            with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+                with patch('src.google_drive.build', return_value=Mock()):
+                    client = GoogleDriveClient("fake_credentials.json")
             result = client.upload_file("/nonexistent/file.txt", "folder123")
             assert result is None
     
@@ -237,7 +251,9 @@ class TestUploadFile:
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
-            client = GoogleDriveClient("fake_credentials.json")
+            with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+                with patch('src.google_drive.build', return_value=Mock()):
+                    client = GoogleDriveClient("fake_credentials.json")
             result = client.upload_file("/path/to/test.txt", "invalid!")
             assert result is None
 
@@ -254,7 +270,9 @@ class TestShareFolder:
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
-            client = GoogleDriveClient("fake_credentials.json")
+            with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+                with patch('src.google_drive.build', return_value=Mock()):
+                    client = GoogleDriveClient("fake_credentials.json")
             # Use a valid folder ID format
             result = client.share_folder("0B1234567890abcdef", "user@example.com")
             assert result is True
@@ -269,7 +287,9 @@ class TestShareFolder:
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
-            client = GoogleDriveClient("fake_credentials.json")
+            with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+                with patch('src.google_drive.build', return_value=Mock()):
+                    client = GoogleDriveClient("fake_credentials.json")
             # Use a valid folder ID format
             result = client.share_folder("0B1234567890abcdef", "user@example.com")
             assert result is True  # Already shared is considered success
@@ -280,7 +300,9 @@ class TestShareFolder:
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
-            client = GoogleDriveClient("fake_credentials.json")
+            with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+                with patch('src.google_drive.build', return_value=Mock()):
+                    client = GoogleDriveClient("fake_credentials.json")
             result = client.share_folder("folder123", "")
             assert result is False
     
@@ -290,6 +312,8 @@ class TestShareFolder:
         mock_build.return_value = mock_service
         
         with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
-            client = GoogleDriveClient("fake_credentials.json")
+            with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+                with patch('src.google_drive.build', return_value=Mock()):
+                    client = GoogleDriveClient("fake_credentials.json")
             result = client.share_folder("invalid!", "user@example.com")
             assert result is False

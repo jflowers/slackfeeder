@@ -94,9 +94,49 @@ class TestValidateEmail:
             "user+tag@example.co.uk",
             "user_name@example-domain.com",
             "user123@example123.com",
+            "user%tag@example.com",
+            "user-tag@example.com",
+            "u@example.com",  # Short local part
+            "a" * 64 + "@example.com",  # Max length local part
         ]
         for email in valid_emails:
-            assert validate_email(email) is True
+            assert validate_email(email) is True, f"Email should be valid: {email}"
+    
+    def test_invalid_emails(self):
+        invalid_emails = [
+            "",
+            None,
+            "notanemail",
+            "@example.com",  # Missing local part
+            "user@",  # Missing domain
+            "user@@example.com",  # Multiple @
+            "user@example",  # Missing TLD
+            "user..name@example.com",  # Consecutive dots
+            ".user@example.com",  # Starts with dot
+            "user.@example.com",  # Ends with dot
+            "user@.example.com",  # Domain starts with dot
+            "user@example.com.",  # Domain ends with dot
+            "user@-example.com",  # Domain starts with hyphen
+            "user@example-.com",  # Domain ends with hyphen
+            "a" * 65 + "@example.com",  # Local part too long
+            "a" * 255 + "@example.com",  # Too long overall
+            "user@example.c",  # TLD too short
+        ]
+        for email in invalid_emails:
+            if email is None:
+                continue  # Skip None as it's handled separately
+            assert validate_email(email) is False, f"Email should be invalid: {email}"
+    
+    def test_none_input(self):
+        assert validate_email(None) is False
+    
+    def test_empty_string(self):
+        assert validate_email("") is False
+        assert validate_email("   ") is False  # Only whitespace
+    
+    def test_email_with_whitespace(self):
+        assert validate_email(" user@example.com ") is True  # Strips whitespace
+        assert validate_email("user @example.com") is False  # Space in email
     
     def test_invalid_emails(self):
         invalid_emails = [

@@ -30,6 +30,8 @@ LARGE_CONVERSATION_THRESHOLD = 10000
 MAX_FILE_SIZE_MB = int(os.getenv('MAX_EXPORT_FILE_SIZE_MB', '100'))
 MAX_MESSAGES_PER_CONVERSATION = int(os.getenv('MAX_MESSAGES_PER_CONVERSATION', '50000'))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+# Maximum date range in days (1 year)
+MAX_DATE_RANGE_DAYS = int(os.getenv('MAX_DATE_RANGE_DAYS', '365'))
 
 def preprocess_history(history_data: List[Dict[str, Any]], slack_client: SlackClient, people_cache: Optional[Dict[str, str]] = None) -> str:
     """Processes Slack history into a human-readable format."""
@@ -267,10 +269,21 @@ def main(args):
         output_dir = os.getenv('SLACK_EXPORT_OUTPUT_DIR', 'slack_exports')
         
         # Validate output directory path early to prevent path traversal
-        output_dir = os.path.abspath(os.path.normpath(output_dir))
-        # Check for path traversal attempts
-        if '..' in output_dir or not os.path.isabs(output_dir):
-            logger.error(f"Invalid output directory path detected: {output_dir}. Aborting.")
+        original_output_dir = output_dir
+        
+        # Check original path BEFORE normalization to catch path traversal attempts
+        if '..' in original_output_dir:
+            logger.error(f"Invalid output directory path detected (contains '..'): {original_output_dir}. Aborting.")
+            sys.exit(1)
+        
+        # Then normalize and resolve
+        output_dir = os.path.abspath(os.path.normpath(original_output_dir))
+        
+        # Optional: Restrict to a safe base directory (current working directory)
+        # This prevents writing outside the expected location
+        safe_base = os.path.abspath(os.getcwd())
+        if not output_dir.startswith(safe_base):
+            logger.error(f"Output directory must be within current working directory. Got: {output_dir}, Base: {safe_base}")
             sys.exit(1)
         
         create_directory(output_dir)
@@ -332,6 +345,13 @@ def main(args):
             if args.start_date and args.end_date and oldest_ts and latest_ts:
                 if float(oldest_ts) > float(latest_ts):
                     logger.error(f"Start date ({args.start_date}) must be before end date ({args.end_date})")
+                    stats['skipped'] += 1
+                    continue
+                
+                # Validate date range doesn't exceed maximum
+                date_range_days = (float(latest_ts) - float(oldest_ts)) / 86400  # Convert seconds to days
+                if date_range_days > MAX_DATE_RANGE_DAYS:
+                    logger.error(f"Date range ({date_range_days:.0f} days) exceeds maximum allowed ({MAX_DATE_RANGE_DAYS} days)")
                     stats['skipped'] += 1
                     continue
 

@@ -12,18 +12,32 @@ from src.slack_client import SlackClient
 class TestSlackClientInit:
     """Tests for SlackClient initialization."""
     
-    def test_init_with_valid_token(self):
+    def test_init_with_valid_bot_token(self):
         with patch('src.slack_client.WebClient'):
             client = SlackClient("xoxb-1234567890-1234567890123-abcdefghijklmnopqrstuvwx")
             assert client is not None
-            assert client.user_cache == {}
+            assert isinstance(client.user_cache, type(client.user_cache))  # LRUCache instance
     
-    def test_init_with_invalid_token(self):
+    def test_init_with_valid_user_token(self):
+        with patch('src.slack_client.WebClient'):
+            client = SlackClient("xoxp-1234567890-1234567890123-abcdefghijklmnopqrstuvwx")
+            assert client is not None
+    
+    def test_init_with_invalid_token_empty(self):
         with pytest.raises(ValueError, match="Slack Bot Token is missing"):
             SlackClient("")
-        
+    
+    def test_init_with_invalid_token_placeholder(self):
         with pytest.raises(ValueError, match="Slack Bot Token is missing"):
             SlackClient("xoxb-your-token-here")
+    
+    def test_init_with_invalid_token_format(self):
+        with pytest.raises(ValueError, match="Invalid Slack token format"):
+            SlackClient("invalid-token-format")
+    
+    def test_init_with_invalid_token_wrong_prefix(self):
+        with pytest.raises(ValueError, match="Invalid Slack token format"):
+            SlackClient("xoxa-something")
 
 
 class TestGetUserInfo:

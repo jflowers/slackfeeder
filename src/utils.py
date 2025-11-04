@@ -258,7 +258,49 @@ def validate_email(email: str) -> bool:
     """
     if not email or not isinstance(email, str):
         return False
-    # Basic email validation regex
-    # This pattern matches most common email formats
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email.strip()))
+    
+    email = email.strip()
+    
+    # Basic length checks
+    if len(email) < 3 or len(email) > 254:  # RFC 5321 limits
+        return False
+    
+    # Check for @ symbol
+    if '@' not in email:
+        return False
+    
+    # Split into local and domain parts
+    parts = email.split('@')
+    if len(parts) != 2:
+        return False
+    
+    local_part, domain_part = parts
+    
+    # Validate local part (before @)
+    if not local_part or len(local_part) > 64:  # RFC 5321 limit
+        return False
+    # Cannot start or end with dot
+    if local_part.startswith('.') or local_part.endswith('.'):
+        return False
+    # Cannot have consecutive dots
+    if '..' in local_part:
+        return False
+    
+    # Validate domain part (after @)
+    if not domain_part or len(domain_part) > 253:  # RFC 5321 limit
+        return False
+    
+    # Check for TLD (at least one dot required)
+    if '.' not in domain_part:
+        return False
+    
+    # Domain cannot start or end with dot or hyphen
+    if domain_part.startswith('.') or domain_part.endswith('.') or domain_part.startswith('-') or domain_part.endswith('-'):
+        return False
+    
+    # More comprehensive regex pattern
+    # Allows letters, numbers, dots, hyphens, underscores, plus signs, and percent signs in local part
+    # Domain must have valid TLD (2+ letters)
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$'
+    
+    return bool(re.match(pattern, email))

@@ -12,7 +12,7 @@ venv/
 .idea/
 
 # AI
-CODE_REVIEW_REPORT.md
+CODE_REVIEW_REPORT*
 
 # OS-specific
 .DS_Store

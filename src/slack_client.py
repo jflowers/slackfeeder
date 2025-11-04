@@ -3,6 +3,7 @@ import time
 from typing import Dict, List, Optional
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+from cachetools import LRUCache
 
 from src.utils import save_json_file
 
@@ -18,6 +19,7 @@ SHARE_RATE_LIMIT_INTERVAL = 10  # shares per interval
 SHARE_RATE_LIMIT_DELAY = 1.0  # seconds between intervals
 API_TIMEOUT_SECONDS = 30  # seconds
 MAX_RETRY_DELAY_SECONDS = 60  # seconds
+MAX_USER_CACHE_SIZE = 10000  # Maximum number of users to cache
 
 class SlackClient:
     def __init__(self, token: str):
@@ -31,8 +33,12 @@ class SlackClient:
         """
         if not token or token == "xoxb-your-token-here":
             raise ValueError("Slack Bot Token is missing or not replaced. Please set the SLACK_BOT_TOKEN.")
+        # Validate token format
+        if not token.startswith("xoxb-") and not token.startswith("xoxp-"):
+            raise ValueError(f"Invalid Slack token format. Expected token starting with 'xoxb-' or 'xoxp-', got: {token[:10]}...")
         self.client = WebClient(token=token, timeout=API_TIMEOUT_SECONDS)
-        self.user_cache: Dict[str, Optional[Dict[str, str]]] = {}
+        # Use LRU cache to prevent unbounded memory growth
+        self.user_cache: LRUCache[str, Optional[Dict[str, str]]] = LRUCache(maxsize=MAX_USER_CACHE_SIZE)
     
     def _handle_slack_api_error(self, error: SlackApiError, context: str) -> str:
         """Centralized Slack API error handling.
@@ -242,8 +248,10 @@ class SlackClient:
 
                 except SlackApiError as e:
                     error_code = e.response.get('error', 'unknown') if hasattr(e, 'response') else 'unknown'
-                    logger.error(f"Slack API Error for channel {channel_id} (Page {page_count}): {error_code}")
+                    http_status = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+                    logger.error(f"Slack API Error for channel {channel_id} (Page {page_count}): {error_code} (HTTP {http_status})")
                     
+                    # Handle rate limiting
                     if error_code == 'ratelimited' and retry_count < MAX_RETRIES:
                         retry_count += 1
                         try:
@@ -256,15 +264,37 @@ class SlackClient:
                         time.sleep(retry_after)
                         page_count -= 1  # Don't increment page count for retry
                         continue
+                    # Handle transient errors (5xx, timeouts) with exponential backoff
+                    elif http_status and http_status >= 500 and retry_count < MAX_RETRIES:
+                        retry_count += 1
+                        retry_after = BASE_RETRY_DELAY * (2 ** retry_count)
+                        retry_after = min(retry_after, MAX_RETRY_DELAY_SECONDS)
+                        logger.warning(f"Transient error (HTTP {http_status}). Retrying after {retry_after} seconds... (Attempt {retry_count}/{MAX_RETRIES})")
+                        time.sleep(retry_after)
+                        page_count -= 1  # Don't increment page count for retry
+                        continue
                     else:
                         logger.error(f"Stopping export for channel {channel_id} due to API error: {error_code}")
+                        return None
+                except Exception as e:
+                    # Handle network timeouts and other transient exceptions
+                    error_str = str(e).lower()
+                    is_transient = any(keyword in error_str for keyword in ['timeout', 'connection', 'network', 'temporary'])
+                    
+                    if is_transient and retry_count < MAX_RETRIES:
+                        retry_count += 1
+                        retry_after = BASE_RETRY_DELAY * (2 ** retry_count)
+                        retry_after = min(retry_after, MAX_RETRY_DELAY_SECONDS)
+                        logger.warning(f"Transient error ({str(e)}). Retrying after {retry_after} seconds... (Attempt {retry_count}/{MAX_RETRIES})")
+                        time.sleep(retry_after)
+                        page_count -= 1  # Don't increment page count for retry
+                        continue
+                    else:
+                        logger.error(f"An unexpected error occurred during API call for channel {channel_id}: {e}", exc_info=True)
                         return None
 
                 except (KeyError, AttributeError) as e:
                     logger.error(f"Unexpected response format for channel {channel_id}: {e}")
-                    return None
-                except Exception as e:
-                    logger.error(f"An unexpected error occurred during API call for channel {channel_id}: {e}", exc_info=True)
                     return None
 
                 messages = response.get("messages", [])
