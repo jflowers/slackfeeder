@@ -7,16 +7,16 @@ from src.utils import save_json_file
 
 logger = logging.getLogger(__name__)
 
+# Constants for API pagination and rate limiting
+DEFAULT_PAGE_SIZE = 200
+CONVERSATIONS_PAGE_SIZE = 100
+DEFAULT_RATE_LIMIT_DELAY = 1.2  # seconds
+MAX_RETRIES = 3
+BASE_RETRY_DELAY = 1.2  # seconds
+SHARE_RATE_LIMIT_INTERVAL = 10  # shares per interval
+SHARE_RATE_LIMIT_DELAY = 1.0  # seconds between intervals
+
 class SlackClient:
-    # Constants for API pagination and rate limiting
-    DEFAULT_PAGE_SIZE = 200
-    CONVERSATIONS_PAGE_SIZE = 100
-    DEFAULT_RATE_LIMIT_DELAY = 1.2  # seconds
-    MAX_RETRIES = 3
-    BASE_RETRY_DELAY = 1.2  # seconds
-    SHARE_RATE_LIMIT_INTERVAL = 10  # shares per interval
-    SHARE_RATE_LIMIT_DELAY = 1.0  # seconds between intervals
-    
     def __init__(self, token):
         if not token or token == "xoxb-your-token-here":
             raise ValueError("Slack Bot Token is missing or not replaced. Please set the SLACK_BOT_TOKEN.")
@@ -112,7 +112,7 @@ class SlackClient:
         """Fetches all channels the bot is a member of (including DMs and group chats).
         
         Returns:
-            List of conversation objects
+            List of conversation objects with detailed info
         """
         all_channels_list = []
         channels_cursor = None
@@ -122,17 +122,35 @@ class SlackClient:
             try:
                 response = self.client.users_conversations(
                     types="public_channel,private_channel,mpim,im",
-                    limit=self.CONVERSATIONS_PAGE_SIZE,
+                    limit=CONVERSATIONS_PAGE_SIZE,
                     cursor=channels_cursor
                 )
                 
                 channels = response.get("channels", [])
 
-                for channel in channels:
-                    if channel.get("is_archived"):
-                        logger.info(f"Skipping archived conversation: {channel.get('name', channel.get('id'))}")
+                for channel_summary in channels:
+                    if channel_summary.get("is_archived"):
+                        logger.info(f"Skipping archived conversation: {channel_summary.get('name', channel_summary.get('id'))}")
                         continue
-                    all_channels_list.append(channel)
+                    
+                    # Fetch detailed info for each conversation
+                    try:
+                        channel_info_response = self.client.conversations_info(channel=channel_summary['id'])
+                        channel_detail = channel_info_response.get("channel", {})
+                        
+                        # Construct a more detailed channel object
+                        channel_obj = {
+                            "id": channel_detail.get("id"),
+                            "name": channel_detail.get("name"),
+                            "is_im": channel_detail.get("is_im"),
+                            "is_mpim": channel_detail.get("is_mpim"),
+                            "user": channel_detail.get("user"),
+                            "members": channel_detail.get("members", [])
+                        }
+                        all_channels_list.append(channel_obj)
+                        
+                    except SlackApiError as e:
+                        logger.error(f"Could not fetch details for conversation {channel_summary.get('id')}: {e.response['error']}")
 
                 channels_cursor = response.get("response_metadata", {}).get("next_cursor")
                 if not channels_cursor:

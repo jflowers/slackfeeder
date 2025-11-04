@@ -14,43 +14,28 @@ from src.utils import (
 )
 from src.slack_client import SlackClient
 from src.google_drive import GoogleDriveClient
+from slack_sdk.errors import SlackApiError
 
 logger = setup_logging()
-
-def get_display_name(message, slack_client, people_cache=None):
-    """Gets the friendly display name for a message, looking up from Slack API if needed."""
-    user_id = message.get('user')
-    if not user_id:
-        return "Unknown User"
-    
-    # First check cache (from people.json pre-warming)
-    if people_cache and user_id in people_cache:
-        return people_cache[user_id]
-    
-    # Look up from Slack API (cached in slack_client)
-    user_info = slack_client.get_user_info(user_id)
-    if user_info:
-        display_name = user_info.get("displayName")
-        if display_name:
-            # Update cache for future use
-            if people_cache is not None:
-                people_cache[user_id] = display_name
-            return display_name
-    
-    # Fallback to username if available
-    if 'username' in message:
-        return message['username']
-    
-    # Last resort: return user ID
-    return user_id
 
 def preprocess_history(history_data, slack_client, people_cache=None):
     """Processes Slack history into a human-readable format."""
     threads = {}
     for message in history_data:
-        if message.get('text') is None:
+        text = message.get('text', '')
+        files = message.get('files')
+
+        # If no text and no files, skip
+        if not text and not files:
             continue
         
+        # If no text but has files, use a placeholder
+        if not text and files:
+            text = "[File attached]"
+        # If text and files, append placeholder
+        elif text and files:
+            text += " [File attached]"
+
         thread_key = message.get('thread_ts', message.get('ts'))
         if not thread_key:
             continue
@@ -59,8 +44,15 @@ def preprocess_history(history_data, slack_client, people_cache=None):
             threads[thread_key] = []
         
         ts = message.get('ts')
-        name = get_display_name(message, slack_client, people_cache)
-        text = message.get('text', '').replace('\n', '\n    ')
+        
+        user_id = message.get('user')
+        name = "Unknown User"
+        if user_id:
+            user_info = slack_client.get_user_info(user_id)
+            if user_info:
+                name = user_info.get("displayName", message.get('username', user_id))
+        
+        text = text.replace('\n', '\n    ')
         
         threads[thread_key].append((ts, name, text))
 
@@ -87,39 +79,29 @@ def get_conversation_display_name(channel_info, slack_client):
     if display_name:
         return display_name
     
-    # Try to get name from Slack API
     channel_id = channel_info.get("id")
-    try:
-        response = slack_client.client.conversations_info(channel=channel_id)
-        channel = response.get("channel", {})
-        
-        # For group DMs, create a name from participants
-        if channel.get("is_mpim"):
-            members = channel.get("members", [])
-            names = []
-            for member_id in members:
-                user_info = slack_client.get_user_info(member_id)
-                if user_info:
-                    names.append(user_info.get("displayName", member_id))
-            if names:
-                return ", ".join(sorted(names))
-        
-        # For DMs, get the other user's name
-        if channel.get("is_im"):
-            other_user_id = channel.get("user")
-            if other_user_id:
-                user_info = slack_client.get_user_info(other_user_id)
-                if user_info:
-                    return user_info.get("displayName", other_user_id)
-        
-        # For channels, use name or fallback to ID
-        return channel.get("name") or channel_id
-    except (KeyError, ValueError, AttributeError) as e:
-        logger.warning(f"Could not fetch conversation info for {channel_id}: {e}")
-        return channel_id
-    except Exception as e:
-        logger.error(f"Unexpected error fetching conversation info for {channel_id}: {e}", exc_info=True)
-        return channel_id
+    
+    # For group DMs, create a name from participants
+    if channel_info.get("is_mpim"):
+        members = channel_info.get("members", [])
+        names = []
+        for member_id in members:
+            user_info = slack_client.get_user_info(member_id)
+            if user_info:
+                names.append(user_info.get("displayName", member_id))
+        if names:
+            return ", ".join(sorted(names))
+    
+    # For DMs, get the other user's name
+    if channel_info.get("is_im"):
+        other_user_id = channel_info.get("user")
+        if other_user_id:
+            user_info = slack_client.get_user_info(other_user_id)
+            if user_info:
+                return user_info.get("displayName", other_user_id)
+    
+    # For channels, use name or fallback to ID
+    return channel_info.get("name") or channel_id
 
 def main(args):
     """Main function to run the Slack history export and upload process."""
@@ -136,9 +118,12 @@ def main(args):
         logger.error("GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required and cannot be empty. Exiting.")
         sys.exit(1)
     
-    # Validate credentials file exists
+    # Validate credentials file exists and is a file
     if not os.path.exists(google_drive_credentials_file):
         logger.error(f"Credentials file not found: {google_drive_credentials_file}")
+        sys.exit(1)
+    if not os.path.isfile(google_drive_credentials_file):
+        logger.error(f"Credentials path is not a file: {google_drive_credentials_file}")
         sys.exit(1)
     
     if not google_drive_folder_id:

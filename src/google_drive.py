@@ -58,6 +58,14 @@ class GoogleDriveClient:
             
             # Atomic move
             shutil.move(temp_path, token_path)
+            
+            # Set secure file permissions (read/write for owner only)
+            try:
+                os.chmod(token_path, 0o600)
+                logger.debug(f"Set secure permissions for token file: {token_path}")
+            except OSError as e:
+                logger.warning(f"Could not set permissions on token file {token_path}: {e}")
+            
             logger.debug(f"Token saved successfully to {token_path}")
         except Exception as e:
             logger.error(f"Failed to save token: {e}")
@@ -71,11 +79,21 @@ class GoogleDriveClient:
     def _authenticate(self, credentials_file):
         """Authenticates with Google Drive API."""
         creds = None
-        # Use configurable token path, default to current directory
-        token_path = os.getenv('GOOGLE_DRIVE_TOKEN_FILE', 'token.json')
+        
+        # Securely determine token path
+        default_token_dir = os.path.join(os.path.expanduser("~"), ".config", "slackfeeder")
+        token_path = os.getenv('GOOGLE_DRIVE_TOKEN_FILE', os.path.join(default_token_dir, 'token.json'))
+        
         scopes = ['https://www.googleapis.com/auth/drive']
 
         if os.path.exists(token_path):
+            # Check for insecure file permissions
+            try:
+                if os.stat(token_path).st_mode & 0o077:
+                    logger.warning(f"Token file {token_path} has insecure permissions. Recommended: 600 (read/write for owner only).")
+            except OSError as e:
+                logger.warning(f"Could not check permissions for token file {token_path}: {e}")
+
             try:
                 creds = Credentials.from_authorized_user_file(token_path, scopes)
             except Exception as e:
