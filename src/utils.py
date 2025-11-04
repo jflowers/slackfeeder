@@ -229,7 +229,7 @@ def sanitize_filename(filename):
     
     return filename
 
-def format_timestamp(timestamp_str: str) -> str:
+def format_timestamp(timestamp_str):
     """Converts a Unix timestamp string to a readable datetime string.
     
     Args:
@@ -238,6 +238,8 @@ def format_timestamp(timestamp_str: str) -> str:
     Returns:
         Formatted datetime string, or original string if conversion fails
     """
+    if timestamp_str is None:
+        return None
     try:
         ts = float(timestamp_str)
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
