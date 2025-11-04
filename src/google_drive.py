@@ -4,13 +4,14 @@ import platform
 import re
 import shutil
 import time
+from datetime import datetime, timezone
 from typing import Optional
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +318,7 @@ class GoogleDriveClient:
             logger.error(f"An error occurred while creating folder '{folder_name}': {error}")
             return None
 
-    def upload_file(self, file_path: str, folder_id: str, overwrite: bool = True) -> Optional[str]:
+    def upload_file(self, file_path: str, folder_id: str, overwrite: bool = False) -> Optional[str]:
         """Uploads a file to a specific folder in Google Drive.
         
         Args:
@@ -384,6 +385,159 @@ class GoogleDriveClient:
         except HttpError as error:
             logger.error(f"An error occurred while uploading file '{file_name}': {error}")
             return None
+
+    def list_files_in_folder(self, folder_id: str, name_pattern: Optional[str] = None) -> list:
+        """Lists files in a Google Drive folder.
+        
+        Args:
+            folder_id: Google Drive folder ID
+            name_pattern: Optional pattern to filter files by name (e.g., "_history_")
+            
+        Returns:
+            List of file metadata dictionaries with 'id', 'name', 'createdTime', 'modifiedTime'
+        """
+        # Validate folder ID
+        if not self._validate_folder_id(folder_id):
+            logger.error(f"Invalid folder ID format: {folder_id}")
+            return []
+        
+        query = f"'{folder_id}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'"
+        if name_pattern:
+            escaped_pattern = self._escape_drive_query_string(name_pattern)
+            query += f" and name contains '{escaped_pattern}'"
+        
+        files = []
+        try:
+            self._rate_limit()
+            results = self.service.files().list(
+                q=query,
+                fields='files(id, name, createdTime, modifiedTime)',
+                orderBy='modifiedTime desc',
+                pageSize=100
+            ).execute()
+            files = results.get('files', [])
+        except HttpError as error:
+            logger.warning(f"Error listing files in folder {folder_id}: {error}")
+        return files
+    
+    def get_latest_export_timestamp(self, folder_id: str, file_prefix: str) -> Optional[str]:
+        """Gets the timestamp from the most recent export file in a folder.
+        
+        Parses timestamps from filenames like: {prefix}_history_2024-01-15_14-30-45.txt
+        
+        Args:
+            folder_id: Google Drive folder ID
+            file_prefix: Prefix to match export files (sanitized channel name)
+            
+        Returns:
+            Unix timestamp string from the most recent file, or None if no files found
+        """
+        import re
+        from datetime import datetime, timezone
+        
+        files = self.list_files_in_folder(folder_id, name_pattern=f"{file_prefix}_history_")
+        
+        if not files:
+            return None
+        
+        # Try to find the most recent file by parsing timestamps from filenames
+        latest_timestamp = None
+        latest_file_time = None
+        
+        # Pattern to match: {prefix}_history_YYYY-MM-DD_HH-MM-SS.txt
+        pattern = re.compile(r'_history_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})\.txt$')
+        
+        for file in files:
+            filename = file.get('name', '')
+            match = pattern.search(filename)
+            if match:
+                try:
+                    # Parse the timestamp from filename
+                    date_str = match.group(1)
+                    hour = match.group(2)
+                    minute = match.group(3)
+                    second = match.group(4)
+                    dt_str = f"{date_str} {hour}:{minute}:{second}"
+                    dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+                    dt = dt.replace(tzinfo=timezone.utc)
+                    file_timestamp = dt.timestamp()
+                    
+                    # Keep track of the most recent
+                    if latest_file_time is None or file_timestamp > latest_file_time:
+                        latest_file_time = file_timestamp
+                        # Get the actual message timestamp from the file's metadata if available
+                        # For now, use the file timestamp - we'll use the latest message timestamp from the file content
+                        # But that would require downloading the file, so we'll use modifiedTime as fallback
+                        modified_time = file.get('modifiedTime')
+                        if modified_time:
+                            try:
+                                from datetime import datetime as dt
+                                mod_dt = dt.fromisoformat(modified_time.replace('Z', '+00:00'))
+                                latest_timestamp = str(mod_dt.timestamp())
+                            except Exception:
+                                latest_timestamp = str(file_timestamp)
+                        else:
+                            latest_timestamp = str(file_timestamp)
+                except Exception as e:
+                    logger.debug(f"Could not parse timestamp from filename {filename}: {e}")
+                    continue
+        
+        # If we didn't find a timestamp in filename, use the most recent file's modifiedTime
+        if not latest_timestamp and files:
+            try:
+                most_recent_file = files[0]  # Already sorted by modifiedTime desc
+                modified_time = most_recent_file.get('modifiedTime')
+                if modified_time:
+                    from datetime import datetime as dt
+                    mod_dt = dt.fromisoformat(modified_time.replace('Z', '+00:00'))
+                    latest_timestamp = str(mod_dt.timestamp())
+            except Exception as e:
+                logger.debug(f"Could not parse modifiedTime from file: {e}")
+        
+        return latest_timestamp
+
+    def share_folder(self, folder_id: str, email_address: str) -> bool:
+        """Shares a folder with a specific user.
+        
+        Args:
+            folder_id: Google Drive folder ID to share
+            email_address: Email address of user to share with
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        # Validate folder ID
+        if not self._validate_folder_id(folder_id):
+            logger.error(f"Invalid folder ID format: {folder_id}")
+            return False
+        
+        if not email_address or not email_address.strip():
+            logger.warning(f"Invalid email address provided: {email_address}")
+            return False
+        
+        try:
+            self._rate_limit()
+            permission = {
+                'type': 'user',
+                'role': 'reader',
+                'emailAddress': email_address.strip()
+            }
+            self.service.permissions().create(fileId=folder_id, body=permission).execute()
+            logger.info(f"Shared folder {folder_id} with {email_address}")
+            return True
+        except HttpError as error:
+            # Check if it's a duplicate permission error (already shared)
+            if error.resp.status == 400 and 'already has access' in str(error):
+                logger.debug(f"Folder {folder_id} already shared with {email_address}")
+                return True
+            logger.error(f"An error occurred while sharing folder {folder_id} with {email_address}: {error}")
+            return False
+
+ {error}")
+            return False
+        except Exception as e:
+            logger.warning(f"Error saving export metadata: {e}")
+            return False
 
     def share_folder(self, folder_id: str, email_address: str) -> bool:
         """Shares a folder with a specific user.

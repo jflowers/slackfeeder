@@ -339,22 +339,45 @@ def main(args):
             
             logger.info(f"--- Processing conversation: {channel_name} ({channel_id}) ---")
 
-            # Validate timestamps if provided
-            oldest_ts = convert_date_to_timestamp(args.start_date)
+            # Determine oldest timestamp for incremental fetching
+            # If --start-date is explicitly provided, use it; otherwise check Google Drive for last export
+            oldest_ts = None
+            if args.start_date:
+                oldest_ts = convert_date_to_timestamp(args.start_date)
+                if oldest_ts is None:
+                    logger.error(f"Invalid start date format: {args.start_date}")
+                    stats['skipped'] += 1
+                    continue
+                logger.info(f"Using explicit start date: {args.start_date}")
+            elif args.upload_to_drive:
+                # Check Google Drive for last export timestamp (stateless - works in CI/CD)
+                sanitized_folder_name = sanitize_folder_name(channel_name)
+                safe_channel_name = sanitize_filename(channel_name)
+                folder_id = google_drive_client.create_folder(sanitized_folder_name, google_drive_folder_id)
+                if folder_id:
+                    last_export_ts = google_drive_client.get_latest_export_timestamp(folder_id, safe_channel_name)
+                    if last_export_ts:
+                        oldest_ts = last_export_ts
+                        last_export_dt = datetime.fromtimestamp(float(last_export_ts), tz=timezone.utc)
+                        logger.info(f"Fetching messages since last export: {last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                    else:
+                        logger.info("No previous export found in Drive, fetching all messages")
+                else:
+                    logger.info("Could not access/create folder, fetching all messages")
+            else:
+                logger.info("Not uploading to Drive, fetching all messages (use --start-date for incremental export)")
+            
+            # Validate end date if provided
             latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
-            if args.start_date and oldest_ts is None:
-                logger.error(f"Invalid start date format: {args.start_date}")
-                stats['skipped'] += 1
-                continue
             if args.end_date and latest_ts is None:
                 logger.error(f"Invalid end date format: {args.end_date}")
                 stats['skipped'] += 1
                 continue
             
             # Validate date range logic
-            if args.start_date and args.end_date and oldest_ts and latest_ts:
+            if oldest_ts and latest_ts:
                 if float(oldest_ts) > float(latest_ts):
-                    logger.error(f"Start date ({args.start_date}) must be before end date ({args.end_date})")
+                    logger.error(f"Start date ({args.start_date or 'last export'}) must be before end date ({args.end_date})")
                     stats['skipped'] += 1
                     continue
                 
@@ -404,8 +427,10 @@ Total Messages: {len(history)}
                 processed_history = metadata_header + processed_history
                 
                 # Sanitize filename to prevent path traversal
+                # Add date/time to filename for weekly runs (prevents overwriting)
                 safe_channel_name = sanitize_filename(channel_name)
-                output_filename = f"{safe_channel_name}_history.txt"
+                export_datetime = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+                output_filename = f"{safe_channel_name}_history_{export_datetime}.txt"
                 output_filepath = os.path.join(output_dir, output_filename)
                 
                 # Additional safety check - ensure path is within output_dir
@@ -454,6 +479,7 @@ Total Messages: {len(history)}
                 if args.upload_to_drive:
                     # Sanitize folder name for Google Drive
                     sanitized_folder_name = sanitize_folder_name(channel_name)
+                    safe_channel_name = sanitize_filename(channel_name)
                     folder_id = google_drive_client.create_folder(sanitized_folder_name, google_drive_folder_id)
                     if folder_id:
                         file_id = google_drive_client.upload_file(output_filepath, folder_id)
@@ -463,6 +489,15 @@ Total Messages: {len(history)}
                             continue
                         
                         stats['uploaded'] += 1
+                        
+                        # Save export metadata to Drive (stateless - works in CI/CD)
+                        # Use the latest message timestamp, or current time if no messages
+                        if history:
+                            latest_message_ts = max(float(msg.get('ts', 0)) for msg in history)
+                            google_drive_client.save_export_metadata(folder_id, safe_channel_name, str(latest_message_ts))
+                            logger.info(f"Saved export metadata for {channel_name}")
+                        else:
+                            google_drive_client.save_export_metadata(folder_id, safe_channel_name, str(datetime.now(timezone.utc).timestamp()))
                         
                         # Share with members (with rate limiting)
                         members = slack_client.get_channel_members(channel_id)

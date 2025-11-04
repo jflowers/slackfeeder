@@ -164,8 +164,10 @@ python src/main.py --export-history --upload-to-drive --start-date "2024-01-01" 
 3. **`--upload-to-drive`**:
    - Connects to the Google Drive API
    - For each exported conversation, creates a folder (or uses existing) named with the conversation's display name
-   - Uploads the processed text file to the folder (overwrites if exists)
+   - Uploads the processed text file to the folder (each file has a unique timestamp to prevent overwriting)
+   - Automatically tracks the last export date for incremental updates
    - Shares the folder with all conversation participants via email
+   - On subsequent runs, only fetches messages since the last export
 
 ## Folder Structure
 
@@ -175,6 +177,26 @@ Each conversation gets its own folder in Google Drive, named with the conversati
 - Group chats: Uses comma-separated participant names (e.g., `John Doe, Jane Smith`)
 
 All participants are automatically added as viewers to the folder, allowing them to access the conversation history.
+
+## Weekly/Incremental Exports
+
+The script is designed to run weekly and automatically performs incremental updates. **It is fully stateless and works perfectly in CI/CD pipelines** - no local state files are required.
+
+- **First run**: Fetches all available message history
+- **Subsequent runs**: Automatically fetches only new messages since the last export
+- **File naming**: Each export creates a new file with a timestamp (e.g., `channel_name_history_2024-01-15_14-30-45.txt`) to prevent overwriting
+- **State management**: The script stores the last export timestamp in a small metadata file (`{channel_name}_last_export.json`) **in Google Drive**, not locally
+- **CI/CD friendly**: Since state is stored in Drive, the script works perfectly in ephemeral CI/CD environments
+- **Manual date ranges**: You can still use `--start-date` and `--end-date` to override the automatic incremental behavior
+
+When you run the script weekly:
+1. It checks Google Drive for the last export timestamp (from a metadata file in each folder)
+2. Only fetches messages newer than that timestamp (unless `--start-date` is explicitly provided)
+3. Creates a new dated file in the same folder
+4. Saves the latest message timestamp to a metadata file in Drive (for next run)
+5. Shares the folder with participants (duplicate shares are handled gracefully)
+
+This means you can share the folder with participants, and they'll see all the weekly export files accumulating over time. The script works identically whether run locally or in CI/CD - no state persistence between runs is required.
 
 ## Running in CI/CD
 
