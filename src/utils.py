@@ -15,32 +15,35 @@ def setup_logging():
     )
     return logging.getLogger(__name__)
 
-def sanitize_filename(filename):
-    """Remove path separators and dangerous characters from filename.
+def sanitize_folder_name(name):
+    """Sanitize folder name for Google Drive.
+    
+    Google Drive folder names have restrictions:
+    - Maximum 255 characters
+    - Cannot contain certain special characters
     
     Args:
-        filename: The filename to sanitize
+        name: Folder name to sanitize
         
     Returns:
-        A sanitized filename safe for use in file paths
+        Sanitized folder name safe for Google Drive
     """
-    if not filename:
-        return "unnamed"
+    if not name:
+        return "unnamed_conversation"
     
-    # Remove path separators and parent directory references
-    filename = filename.replace('/', '_').replace('\\', '_')
-    filename = filename.replace('..', '_')
-    # Remove any remaining dangerous characters
-    filename = re.sub(r'[<>:"|?*]', '_', filename)
-    # Remove leading/trailing dots and spaces
-    filename = filename.strip('. ')
-    # Limit length
-    filename = filename[:200]
-    # Ensure we have a valid filename
-    if not filename:
-        filename = "unnamed"
+    # Remove or replace invalid characters for Google Drive
+    # Google Drive doesn't allow: / \ < > : " | ? *
+    name = re.sub(r'[/\\<>:"|?*]', '_', name)
+    # Remove leading/trailing spaces and dots
+    name = name.strip('. ')
+    # Limit length (Google Drive limit is 255 chars)
+    if len(name) > 255:
+        name = name[:255].rstrip('. ')
+    # Ensure we have a valid name
+    if not name:
+        name = "unnamed_conversation"
     
-    return filename
+    return name
 
 def load_json_file(filepath: str):
     """Loads a JSON file and returns its content.
@@ -177,18 +180,29 @@ def create_directory(dir_path):
             return False
     return True
 
-def format_timestamp(timestamp_str):
-    """Converts a Unix timestamp string to a readable datetime string.
+def sanitize_filename(filename):
+    """Remove path separators and dangerous characters from filename.
     
     Args:
-        timestamp_str: Unix timestamp as string
+        filename: The filename to sanitize
         
     Returns:
-        Formatted datetime string, or original string if conversion fails
+        A sanitized filename safe for use in file paths
     """
-    try:
-        ts = float(timestamp_str)
-        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    except (ValueError, TypeError):
-        return timestamp_str
+    if not filename:
+        return "unnamed"
+    
+    # Remove path separators and parent directory references
+    filename = filename.replace('/', '_').replace('\\', '_')
+    filename = filename.replace('..', '_')
+    # Remove any remaining dangerous characters
+    filename = re.sub(r'[<>:"|?*]', '_', filename)
+    # Remove leading/trailing dots and spaces
+    filename = filename.strip('. ')
+    # Limit length
+    filename = filename[:200]
+    # Ensure we have a valid filename
+    if not filename:
+        filename = "unnamed"
+    
+    return filename

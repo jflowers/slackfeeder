@@ -134,9 +134,16 @@ class SlackClient:
                         logger.info(f"Skipping archived conversation: {channel_summary.get('name', channel_summary.get('id'))}")
                         continue
                     
+                    # Validate channel_summary has ID
+                    channel_id = channel_summary.get('id')
+                    if not channel_id:
+                        logger.warning(f"Skipping channel summary without ID: {channel_summary}")
+                        failures.append('unknown')
+                        continue
+                    
                     # Fetch detailed info for each conversation
                     try:
-                        channel_info_response = self.client.conversations_info(channel=channel_summary['id'])
+                        channel_info_response = self.client.conversations_info(channel=channel_id)
                         channel_detail = channel_info_response.get("channel", {})
                         
                         # Construct a more detailed channel object
@@ -151,13 +158,16 @@ class SlackClient:
                         all_channels_list.append(channel_obj)
                         
                     except SlackApiError as e:
-                        channel_id = channel_summary.get('id', 'unknown')
                         error_code = e.response.get('error', 'unknown') if hasattr(e, 'response') else 'unknown'
                         failures.append(channel_id)
                         logger.error(f"Could not fetch details for conversation {channel_id}: {error_code}")
                 
                 if failures:
-                    logger.warning(f"Failed to fetch details for {len(failures)} out of {len(channels)} conversations")
+                    failure_rate = len(failures) / len(channels) if channels else 0
+                    if failure_rate > 0.5:  # More than 50% failed
+                        logger.error(f"High failure rate ({failure_rate:.1%}). Only {len(all_channels_list)}/{len(channels)} conversations fetched successfully.")
+                    else:
+                        logger.warning(f"Failed to fetch details for {len(failures)} out of {len(channels)} conversations")
 
                 channels_cursor = response.get("response_metadata", {}).get("next_cursor")
                 if not channels_cursor:

@@ -179,7 +179,24 @@ class GoogleDriveClient:
         return None
 
     def create_folder(self, folder_name, parent_folder_id=None):
-        """Creates a folder in Google Drive, or returns existing folder if found."""
+        """Creates a folder in Google Drive, or returns existing folder if found.
+        
+        Args:
+            folder_name: Name of the folder to create
+            parent_folder_id: Optional parent folder ID
+            
+        Returns:
+            Folder ID if successful, None otherwise
+        """
+        if not folder_name:
+            logger.error("Folder name cannot be empty")
+            return None
+        
+        # Validate folder name length (Google Drive limit is 255 characters)
+        if len(folder_name) > 255:
+            logger.warning(f"Folder name exceeds 255 characters, truncating: {folder_name[:255]}")
+            folder_name = folder_name[:255].rstrip('. ')
+        
         # First check if folder already exists
         existing_folder_id = self.find_folder(folder_name, parent_folder_id)
         if existing_folder_id:

@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from src.utils import (
     setup_logging,
     load_json_file,
@@ -10,8 +11,10 @@ from src.utils import (
     create_directory,
     format_timestamp,
     sanitize_filename,
+    sanitize_folder_name,
     validate_channels_json,
     validate_channel_id,
+    validate_email,
 )
 from src.slack_client import SlackClient, SHARE_RATE_LIMIT_INTERVAL, SHARE_RATE_LIMIT_DELAY
 from src.google_drive import GoogleDriveClient
@@ -82,16 +85,30 @@ def preprocess_history(history_data, slack_client, people_cache=None):
     return "\n".join(output_lines)
 
 def get_conversation_display_name(channel_info, slack_client):
-    """Gets the display name for a conversation, handling channels, DMs, and group chats."""
+    """Gets the display name for a conversation, handling channels, DMs, and group chats.
+    
+    Args:
+        channel_info: Dictionary containing channel information
+        slack_client: SlackClient instance for API calls
+        
+    Returns:
+        Display name for the conversation, never None or empty
+    """
     display_name = channel_info.get("displayName")
     if display_name:
         return display_name
     
     channel_id = channel_info.get("id")
+    if not channel_id:
+        logger.warning("Channel info missing ID")
+        return "unknown_conversation"
     
     # For group DMs, create a name from participants
     if channel_info.get("is_mpim"):
         members = channel_info.get("members", [])
+        if not members:
+            logger.warning(f"Group DM {channel_id} has no members")
+            return f"group_dm_{channel_id[:8]}"
         names = []
         for member_id in members:
             user_info = slack_client.get_user_info(member_id)
@@ -99,6 +116,8 @@ def get_conversation_display_name(channel_info, slack_client):
                 names.append(user_info.get("displayName", member_id))
         if names:
             return ", ".join(sorted(names))
+        else:
+            return f"group_dm_{channel_id[:8]}"
     
     # For DMs, get the other user's name
     if channel_info.get("is_im"):
@@ -107,9 +126,11 @@ def get_conversation_display_name(channel_info, slack_client):
             user_info = slack_client.get_user_info(other_user_id)
             if user_info:
                 return user_info.get("displayName", other_user_id)
+        return f"dm_{channel_id[:8]}"
     
     # For channels, use name or fallback to ID
-    return channel_info.get("name") or channel_id
+    name = channel_info.get("name") or channel_id
+    return name if name else f"conversation_{channel_id[:8]}"
 
 def main(args):
     """Main function to run the Slack history export and upload process."""
@@ -222,15 +243,43 @@ def main(args):
         else:
             logger.info("No people.json found - will lookup users on-demand from Slack API")
         
-        output_dir = "slack_exports"
+        # Make output directory configurable
+        output_dir = os.getenv('SLACK_EXPORT_OUTPUT_DIR', 'slack_exports')
         create_directory(output_dir)
+        
+        # Initialize statistics tracking
+        stats = {
+            'processed': 0,
+            'skipped': 0,
+            'failed': 0,
+            'uploaded': 0,
+            'shared': 0,
+            'total_messages': 0
+        }
+        
+        total_conversations = len(channels_to_export)
+        logger.info(f"Starting export of {total_conversations} conversation(s)")
 
-        for channel_info in channels_to_export:
+        for idx, channel_info in enumerate(channels_to_export, 1):
+            # Validate channel_info structure
+            if not isinstance(channel_info, dict):
+                logger.warning(f"Invalid channel info format: {channel_info}. Skipping.")
+                stats['skipped'] += 1
+                continue
+            
+            # Add small delay between conversations to avoid rate limits
+            if idx > 1:
+                time.sleep(0.5)  # Small delay between conversations
+            
+            # Progress indicator
+            logger.info(f"[{idx}/{total_conversations}] Processing conversation...")
+            
             channel_id = channel_info.get("id")
             
             # Validate channel ID format
             if not channel_id or not validate_channel_id(channel_id):
                 logger.warning(f"Invalid channel ID format: {channel_id}. Skipping.")
+                stats['skipped'] += 1
                 continue
             
             channel_name = get_conversation_display_name(channel_info, slack_client)
@@ -242,10 +291,19 @@ def main(args):
             latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
             if args.start_date and oldest_ts is None:
                 logger.error(f"Invalid start date format: {args.start_date}")
+                stats['skipped'] += 1
                 continue
             if args.end_date and latest_ts is None:
                 logger.error(f"Invalid end date format: {args.end_date}")
+                stats['skipped'] += 1
                 continue
+            
+            # Validate date range logic
+            if args.start_date and args.end_date and oldest_ts and latest_ts:
+                if float(oldest_ts) > float(latest_ts):
+                    logger.error(f"Start date ({args.start_date}) must be before end date ({args.end_date})")
+                    stats['skipped'] += 1
+                    continue
 
             history = slack_client.fetch_channel_history(
                 channel_id,
@@ -254,7 +312,30 @@ def main(args):
             )
 
             if history:
+                # Warn about large conversations
+                if len(history) > 10000:
+                    logger.warning(f"Large conversation detected ({len(history)} messages). This may take a while and use significant memory.")
+                
                 processed_history = preprocess_history(history, slack_client, people_cache)
+                
+                # Check for empty history after processing
+                if not processed_history or not processed_history.strip():
+                    logger.warning(f"No processable content found for {channel_name}. Skipping file creation.")
+                    stats['skipped'] += 1
+                    continue
+                
+                # Add metadata header
+                export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                metadata_header = f"""Slack Conversation Export
+Channel: {channel_name}
+Channel ID: {channel_id}
+Export Date: {export_date}
+Total Messages: {len(history)}
+
+{'='*80}
+
+"""
+                processed_history = metadata_header + processed_history
                 
                 # Sanitize filename to prevent path traversal
                 safe_channel_name = sanitize_filename(channel_name)
@@ -266,6 +347,7 @@ def main(args):
                 abs_output_filepath = os.path.abspath(output_filepath)
                 if not abs_output_filepath.startswith(abs_output_dir):
                     logger.error(f"Invalid file path detected: {output_filepath}. Skipping.")
+                    stats['failed'] += 1
                     continue
                 
                 try:
@@ -277,23 +359,33 @@ def main(args):
                     # Verify file was written successfully
                     if not os.path.exists(output_filepath) or os.path.getsize(output_filepath) == 0:
                         logger.error(f"File write verification failed for {output_filepath}")
+                        stats['failed'] += 1
                         continue
                     
+                    stats['processed'] += 1
+                    stats['total_messages'] += len(history)
                     logger.info(f"Saved processed history to {output_filepath}")
                 except IOError as e:
                     logger.error(f"Failed to write file {output_filepath}: {e}")
+                    stats['failed'] += 1
                     continue
                 except Exception as e:
                     logger.error(f"Unexpected error writing file {output_filepath}: {e}", exc_info=True)
+                    stats['failed'] += 1
                     continue
 
                 if args.upload_to_drive:
-                    folder_id = google_drive_client.create_folder(channel_name, google_drive_folder_id)
+                    # Sanitize folder name for Google Drive
+                    sanitized_folder_name = sanitize_folder_name(channel_name)
+                    folder_id = google_drive_client.create_folder(sanitized_folder_name, google_drive_folder_id)
                     if folder_id:
                         file_id = google_drive_client.upload_file(output_filepath, folder_id)
                         if not file_id:
                             logger.error(f"Failed to upload file for {channel_name}. Skipping sharing.")
+                            stats['failed'] += 1
                             continue
+                        
+                        stats['uploaded'] += 1
                         
                         # Share with members (with rate limiting)
                         members = slack_client.get_channel_members(channel_id)
@@ -311,11 +403,17 @@ def main(args):
                             user_info = slack_client.get_user_info(member_id)
                             if user_info and user_info.get("email"):
                                 email = user_info["email"]
+                                # Validate email format
+                                if not validate_email(email):
+                                    logger.warning(f"Invalid email format: {email}. Skipping.")
+                                    continue
+                                
                                 if email not in shared_emails:
                                     try:
                                         shared = google_drive_client.share_folder(folder_id, email)
                                         if shared:
                                             shared_emails.add(email)
+                                            stats['shared'] += 1
                                         else:
                                             share_errors.append(f"{email}: share failed")
                                     except Exception as e:
@@ -324,9 +422,22 @@ def main(args):
                         if share_errors:
                             logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
                         
-                        logger.info(f"Shared folder '{channel_name}' with {len(shared_emails)} participants")
+                        logger.info(f"Shared folder '{sanitized_folder_name}' with {len(shared_emails)} participants")
             else:
                 logger.warning(f"No history found for {channel_name} ({channel_id})")
+                stats['skipped'] += 1
+        
+        # Log processing statistics
+        logger.info("="*80)
+        logger.info("Export Statistics:")
+        logger.info(f"  Processed: {stats['processed']}")
+        logger.info(f"  Skipped: {stats['skipped']}")
+        logger.info(f"  Failed: {stats['failed']}")
+        if args.upload_to_drive:
+            logger.info(f"  Uploaded to Drive: {stats['uploaded']}")
+            logger.info(f"  Folders shared: {stats['shared']}")
+        logger.info(f"  Total messages processed: {stats['total_messages']}")
+        logger.info("="*80)
 
 
 if __name__ == "__main__":
