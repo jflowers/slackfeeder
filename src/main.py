@@ -4,6 +4,12 @@ import sys
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
+
+# Add project root to Python path so imports work regardless of how script is invoked
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from dotenv import load_dotenv
 from src.utils import (
     setup_logging,
