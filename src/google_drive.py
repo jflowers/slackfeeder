@@ -559,15 +559,48 @@ class GoogleDriveClient:
             logger.warning(f"Error saving export metadata: {e}")
             return False
 
-    def share_folder(self, folder_id: str, email_address: str) -> bool:
+    def get_folder_permissions(self, folder_id: str) -> list:
+        """Gets the list of permissions for a folder.
+        
+        Args:
+            folder_id: Google Drive folder ID
+            
+        Returns:
+            List of permission dictionaries with 'id', 'type', 'role', 'emailAddress'
+        """
+        # Validate folder ID
+        if not self._validate_folder_id(folder_id):
+            logger.error(f"Invalid folder ID format: {folder_id}")
+            return []
+        
+        permissions = []
+        try:
+            self._rate_limit()
+            results = self.service.permissions().list(
+                fileId=folder_id,
+                fields='permissions(id, type, role, emailAddress)'
+            ).execute()
+            permissions = results.get('permissions', [])
+        except HttpError as error:
+            logger.warning(f"Error listing permissions for folder {folder_id}: {error}")
+        except Exception as e:
+            logger.debug(f"Error getting folder permissions: {e}")
+        
+        return permissions
+    
+    def share_folder(self, folder_id: str, email_address: str, send_notification: bool = True) -> bool:
         """Shares a folder with a specific user.
+        
+        Checks if the user already has access before attempting to share,
+        preventing duplicate notifications.
         
         Args:
             folder_id: Google Drive folder ID to share
             email_address: Email address of user to share with
+            send_notification: Whether to send email notification (default: True)
             
         Returns:
-            True if successful, False otherwise
+            True if successful or already shared, False otherwise
         """
         # Validate folder ID
         if not self._validate_folder_id(folder_id):
@@ -578,14 +611,28 @@ class GoogleDriveClient:
             logger.warning(f"Invalid email address provided: {email_address}")
             return False
         
+        email_address = email_address.strip()
+        
+        # Check if user already has access
+        existing_permissions = self.get_folder_permissions(folder_id)
+        for perm in existing_permissions:
+            if perm.get('type') == 'user' and perm.get('emailAddress', '').lower() == email_address.lower():
+                logger.debug(f"Folder {folder_id} already shared with {email_address}")
+                return True
+        
+        # User doesn't have access, proceed with sharing
         try:
             self._rate_limit()
             permission = {
                 'type': 'user',
                 'role': 'reader',
-                'emailAddress': email_address.strip()
+                'emailAddress': email_address
             }
-            self.service.permissions().create(fileId=folder_id, body=permission).execute()
+            self.service.permissions().create(
+                fileId=folder_id,
+                body=permission,
+                sendNotificationEmail=send_notification
+            ).execute()
             logger.info(f"Shared folder {folder_id} with {email_address}")
             return True
         except HttpError as error:
@@ -596,43 +643,6 @@ class GoogleDriveClient:
             logger.error(f"An error occurred while sharing folder {folder_id} with {email_address}: {error}")
             return False
         except Exception as e:
-            logger.warning(f"Error saving export metadata: {e}")
-            return False
-
-    def share_folder(self, folder_id: str, email_address: str) -> bool:
-        """Shares a folder with a specific user.
-        
-        Args:
-            folder_id: Google Drive folder ID to share
-            email_address: Email address of user to share with
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        # Validate folder ID
-        if not self._validate_folder_id(folder_id):
-            logger.error(f"Invalid folder ID format: {folder_id}")
-            return False
-        
-        if not email_address or not email_address.strip():
-            logger.warning(f"Invalid email address provided: {email_address}")
-            return False
-        
-        try:
-            self._rate_limit()
-            permission = {
-                'type': 'user',
-                'role': 'reader',
-                'emailAddress': email_address.strip()
-            }
-            self.service.permissions().create(fileId=folder_id, body=permission).execute()
-            logger.info(f"Shared folder {folder_id} with {email_address}")
-            return True
-        except HttpError as error:
-            # Check if it's a duplicate permission error (already shared)
-            if error.resp.status == 400 and 'already has access' in str(error):
-                logger.debug(f"Folder {folder_id} already shared with {email_address}")
-                return True
-            logger.error(f"An error occurred while sharing folder {folder_id} with {email_address}: {error}")
+            logger.warning(f"Error sharing folder: {e}")
             return False
 

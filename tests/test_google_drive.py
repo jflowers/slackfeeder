@@ -317,3 +317,194 @@ class TestShareFolder:
                     client = GoogleDriveClient("fake_credentials.json")
             result = client.share_folder("invalid!", "user@example.com")
             assert result is False
+
+
+class TestGetFolderPermissions:
+    """Tests for get_folder_permissions method."""
+    
+    @patch('src.google_drive.build')
+    def test_get_permissions_successfully(self, mock_build):
+        mock_service = Mock()
+        mock_list_result = Mock()
+        mock_list_result.execute.return_value = {
+            "permissions": [
+                {
+                    "id": "perm123",
+                    "type": "user",
+                    "role": "reader",
+                    "emailAddress": "user1@example.com"
+                },
+                {
+                    "id": "perm456",
+                    "type": "user",
+                    "role": "reader",
+                    "emailAddress": "user2@example.com"
+                }
+            ]
+        }
+        mock_service.permissions.return_value.list.return_value = mock_list_result
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            result = client.get_folder_permissions("0B1234567890abcdef")
+            assert len(result) == 2
+            assert result[0]["emailAddress"] == "user1@example.com"
+            assert result[1]["emailAddress"] == "user2@example.com"
+    
+    @patch('src.google_drive.build')
+    def test_get_permissions_empty(self, mock_build):
+        mock_service = Mock()
+        mock_list_result = Mock()
+        mock_list_result.execute.return_value = {"permissions": []}
+        mock_service.permissions.return_value.list.return_value = mock_list_result
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            result = client.get_folder_permissions("0B1234567890abcdef")
+            assert result == []
+    
+    @patch('src.google_drive.build')
+    def test_get_permissions_error(self, mock_build):
+        mock_service = Mock()
+        mock_list_result = Mock()
+        mock_error = HttpError(Mock(status=403), b'Forbidden')
+        mock_list_result.execute.side_effect = mock_error
+        mock_service.permissions.return_value.list.return_value = mock_list_result
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            result = client.get_folder_permissions("0B1234567890abcdef")
+            assert result == []
+    
+    @patch('src.google_drive.build')
+    def test_get_permissions_invalid_folder_id(self, mock_build):
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            result = client.get_folder_permissions("invalid!")
+            assert result == []
+
+
+class TestShareFolderWithPermissionCheck:
+    """Tests for share_folder method with permission checking."""
+    
+    @patch('src.google_drive.build')
+    def test_share_skips_if_already_shared(self, mock_build):
+        """Test that share_folder skips API call if user already has access."""
+        mock_service = Mock()
+        # Mock get_folder_permissions to return existing permission
+        mock_list_result = Mock()
+        mock_list_result.execute.return_value = {
+            "permissions": [
+                {
+                    "id": "perm123",
+                    "type": "user",
+                    "role": "reader",
+                    "emailAddress": "user@example.com"
+                }
+            ]
+        }
+        mock_service.permissions.return_value.list.return_value = mock_list_result
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            result = client.share_folder("0B1234567890abcdef", "user@example.com")
+            
+            # Should return True without calling create
+            assert result is True
+            # Verify create was NOT called
+            mock_service.permissions.return_value.create.assert_not_called()
+    
+    @patch('src.google_drive.build')
+    def test_share_proceeds_if_not_shared(self, mock_build):
+        """Test that share_folder proceeds if user doesn't have access."""
+        mock_service = Mock()
+        # Mock get_folder_permissions to return empty (no existing permission)
+        mock_list_result = Mock()
+        mock_list_result.execute.return_value = {"permissions": []}
+        mock_service.permissions.return_value.list.return_value = mock_list_result
+        
+        # Mock create permission
+        mock_create_result = Mock()
+        mock_create_result.execute.return_value = {"id": "permission123"}
+        mock_service.permissions.return_value.create.return_value = mock_create_result
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            result = client.share_folder("0B1234567890abcdef", "user@example.com")
+            
+            # Should return True and call create
+            assert result is True
+            # Verify create WAS called
+            mock_service.permissions.return_value.create.assert_called_once()
+            # Verify sendNotificationEmail parameter was passed (default True)
+            call_args = mock_service.permissions.return_value.create.call_args
+            assert call_args[1]['sendNotificationEmail'] is True
+    
+    @patch('src.google_drive.build')
+    def test_share_with_notification_disabled(self, mock_build):
+        """Test that share_folder respects send_notification parameter."""
+        mock_service = Mock()
+        # Mock get_folder_permissions to return empty
+        mock_list_result = Mock()
+        mock_list_result.execute.return_value = {"permissions": []}
+        mock_service.permissions.return_value.list.return_value = mock_list_result
+        
+        # Mock create permission
+        mock_create_result = Mock()
+        mock_create_result.execute.return_value = {"id": "permission123"}
+        mock_service.permissions.return_value.create.return_value = mock_create_result
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            result = client.share_folder("0B1234567890abcdef", "user@example.com", send_notification=False)
+            
+            # Should return True
+            assert result is True
+            # Verify sendNotificationEmail was False
+            call_args = mock_service.permissions.return_value.create.call_args
+            assert call_args[1]['sendNotificationEmail'] is False
+    
+    @patch('src.google_drive.build')
+    def test_share_case_insensitive_email_match(self, mock_build):
+        """Test that email matching is case-insensitive."""
+        mock_service = Mock()
+        # Mock get_folder_permissions to return permission with different case
+        mock_list_result = Mock()
+        mock_list_result.execute.return_value = {
+            "permissions": [
+                {
+                    "id": "perm123",
+                    "type": "user",
+                    "role": "reader",
+                    "emailAddress": "User@Example.COM"
+                }
+            ]
+        }
+        mock_service.permissions.return_value.list.return_value = mock_list_result
+        mock_build.return_value = mock_service
+        
+        with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
+            client = GoogleDriveClient("fake_credentials.json")
+            client.service = mock_service
+            # Try to share with lowercase version
+            result = client.share_folder("0B1234567890abcdef", "user@example.com")
+            
+            # Should skip because emails match (case-insensitive)
+            assert result is True
+            mock_service.permissions.return_value.create.assert_not_called()
