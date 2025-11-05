@@ -495,6 +495,69 @@ class GoogleDriveClient:
                 logger.debug(f"Could not parse modifiedTime from file: {e}")
         
         return latest_timestamp
+    
+    def save_export_metadata(self, folder_id: str, file_prefix: str, latest_message_timestamp: str) -> bool:
+        """Saves export metadata to a small JSON file in the folder.
+        
+        Args:
+            folder_id: Google Drive folder ID
+            file_prefix: Prefix for the metadata filename
+            latest_message_timestamp: Unix timestamp string of the latest message
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        import json
+        import io
+        
+        metadata_filename = f"{file_prefix}_last_export.json"
+        metadata_content = {
+            "latest_message_timestamp": float(latest_message_timestamp),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Check if metadata file already exists
+        escaped_metadata_name = self._escape_drive_query_string(metadata_filename)
+        query = f"name='{escaped_metadata_name}' and '{folder_id}' in parents and trashed=false"
+        
+        try:
+            self._rate_limit()
+            results = self.service.files().list(
+                q=query,
+                fields='files(id, name)',
+                pageSize=1
+            ).execute()
+            existing_files = results.get('files', [])
+            
+            if existing_files:
+                # Update existing file
+                file_id = existing_files[0]['id']
+                metadata_json = json.dumps(metadata_content).encode('utf-8')
+                media = MediaIoBaseUpload(io.BytesIO(metadata_json), mimetype='application/json', resumable=False)
+                
+                self._rate_limit()
+                self.service.files().update(fileId=file_id, media_body=media).execute()
+                logger.debug(f"Updated metadata file {metadata_filename}")
+            else:
+                # Create new file
+                metadata_json = json.dumps(metadata_content).encode('utf-8')
+                media = MediaIoBaseUpload(io.BytesIO(metadata_json), mimetype='application/json', resumable=False)
+                file_metadata = {
+                    'name': metadata_filename,
+                    'parents': [folder_id]
+                }
+                
+                self._rate_limit()
+                self.service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+                logger.debug(f"Created metadata file {metadata_filename}")
+            
+            return True
+        except HttpError as error:
+            logger.warning(f"Failed to save export metadata: {error}")
+            return False
+        except Exception as e:
+            logger.warning(f"Error saving export metadata: {e}")
+            return False
 
     def share_folder(self, folder_id: str, email_address: str) -> bool:
         """Shares a folder with a specific user.
@@ -531,9 +594,6 @@ class GoogleDriveClient:
                 logger.debug(f"Folder {folder_id} already shared with {email_address}")
                 return True
             logger.error(f"An error occurred while sharing folder {folder_id} with {email_address}: {error}")
-            return False
-
- {error}")
             return False
         except Exception as e:
             logger.warning(f"Error saving export metadata: {e}")
