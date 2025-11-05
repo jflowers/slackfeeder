@@ -98,6 +98,15 @@ This will create:
 - `config/channels.json` - List of all conversations (channels, DMs, group chats) with export flags
 - `config/people.json` - List of all users with their display names and emails (used as a performance cache)
 
+**Note:** If you're cloning this repository, you'll need to copy the example files first:
+
+```bash
+cp config/channels.json.example config/channels.json
+cp config/people.json.example config/people.json
+```
+
+Then run `--make-ref-files` to populate them with your actual data.
+
 ### 2. Configure Conversations to Export
 
 Edit `config/channels.json` to control which conversations to export. By default, all conversations have `"export": true`. Set `"export": false"` to exclude conversations you don't want:
@@ -126,6 +135,8 @@ Edit `config/channels.json` to control which conversations to export. By default
 - If `displayName` is not provided, the script will automatically fetch it from Slack (for channels) or construct it from participant names (for DMs and group chats)
 
 **Note:** `people.json` is optional but recommended - it speeds up processing by avoiding API lookups for known users. The system will automatically look up new users on-demand if they're not in the cache.
+
+**Configuration Files:** The `config/channels.json` and `config/people.json` files are **not tracked in git** (they're in `.gitignore`) because they contain user-specific settings. Example files (`config/channels.json.example` and `config/people.json.example`) are provided as templates. If you're forking this repository, you can commit your config files to your fork - they won't conflict with upstream updates since they're ignored in the upstream repository.
 
 ### 3. Export and Upload
 

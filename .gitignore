@@ -21,6 +21,8 @@ Thumbs.db
 # Data and Config
 data/
 config/config.json
+config/channels.json
+config/people.json
 slack_exports/
 token.json
 .env

@@ -1,0 +1,9 @@
+{
+    "people": [
+        {
+            "slackId": "U1234567890",
+            "email": "user@example.com",
+            "displayName": "John Doe"
+        }
+    ]
+}

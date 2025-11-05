@@ -237,7 +237,12 @@ def main(args):
         channels_data = load_json_file("config/channels.json")
         if not channels_data:
             logger.error("Could not load channels from config/channels.json. Exiting.")
-            logger.info("Run with --make-ref-files first to generate channels.json")
+            example_path = "config/channels.json.example"
+            if os.path.exists(example_path):
+                logger.info(f"Copy {example_path} to config/channels.json and customize it for your needs.")
+                logger.info("Alternatively, run with --make-ref-files first to generate channels.json")
+            else:
+                logger.info("Run with --make-ref-files first to generate channels.json")
             return
 
         # Validate JSON structure
