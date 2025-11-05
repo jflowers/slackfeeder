@@ -22,6 +22,8 @@ cd slackfeeder
 
 ### 2. Install dependencies
 
+**Python Requirements:** Python 3.9 or higher is required.
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -65,6 +67,7 @@ For CI/CD pipelines or when you prefer to set environment variables directly:
   - Enable the Google Drive API
   - Create OAuth 2.0 credentials (Desktop app type)
   - Download the credentials as a JSON file
+  - **Important:** Keep this file secure and never commit it to version control
 
 - **`GOOGLE_DRIVE_FOLDER_ID`**: (Optional) ID of the Google Drive folder where conversations should be stored
   - If not set, files will be uploaded to Drive root
@@ -152,6 +155,34 @@ You can also specify a date range for the export:
 python src/main.py --export-history --upload-to-drive --start-date "2024-01-01" --end-date "2024-12-31"
 ```
 
+### Example: Running Multiple Times
+
+**First Run:**
+```bash
+python src/main.py --export-history --upload-to-drive
+# Output: Fetches all messages, creates folders, uploads files, shares with participants
+# Participants receive email notifications
+```
+
+**Subsequent Runs (Weekly):**
+```bash
+python src/main.py --export-history --upload-to-drive
+# Output: Only fetches new messages since last export
+# Creates new dated files in existing folders
+# No duplicate notifications sent (permissions already exist)
+```
+
+**Example Output:**
+```
+2025-11-05 10:29:22 - INFO - Found 2 conversation(s) to export
+2025-11-05 10:29:22 - INFO - --- Processing conversation: Emily Fox, Jenn Power (C09PHTCPA2F) ---
+2025-11-05 10:29:22 - INFO - Fetching messages since last export: 2025-11-05 14:24:41 UTC
+2025-11-05 10:29:23 - INFO - Fetched 9 messages on page 1
+2025-11-05 10:29:25 - INFO - Uploaded file 'Emily Fox, Jenn Power_history_2025-11-05_15-29-23.txt'
+2025-11-05 10:29:28 - INFO - Saved export metadata for Emily Fox, Jenn Power
+2025-11-05 10:29:34 - INFO - Shared folder 'Emily Fox, Jenn Power' with 3 participants
+```
+
 ## How it Works
 
 1. **`--make-ref-files`**:
@@ -176,7 +207,14 @@ python src/main.py --export-history --upload-to-drive --start-date "2024-01-01" 
    - Connects to the Google Drive API
    - For each exported conversation, creates a folder (or uses existing) named with the conversation's display name
    - Uploads the processed text file to the folder (each file has a unique timestamp to prevent overwriting)
-   - Automatically tracks the last export date for incremental updates
+   - Automatically tracks the last export date for incremental updates:
+     - Creates/updates a metadata file (`{channel_name}_last_export.json`) in each folder
+     - Stores the timestamp of the latest message exported
+     - Used by subsequent runs to determine what's new
+   - Checks existing folder permissions before sharing:
+     - If user already has access, skips the share API call (prevents duplicate notifications)
+     - Only shares with users who don't already have access
+     - Users receive email notifications only on first share
    - Shares the folder with all conversation participants via email
    - On subsequent runs, only fetches messages since the last export
 
@@ -188,6 +226,20 @@ Each conversation gets its own folder in Google Drive, named with the conversati
 - Group chats: Uses comma-separated participant names (e.g., `John Doe, Jane Smith`)
 
 All participants are automatically added as viewers to the folder, allowing them to access the conversation history.
+
+**Metadata Files:** Each folder contains a small metadata file (`{channel_name}_last_export.json`) that tracks the last export timestamp. This file:
+- Is created automatically on first export
+- Is updated after each successful export
+- Contains the timestamp of the latest message exported
+- Is used by subsequent runs to determine incremental updates
+- Is visible in the folder but is small and unobtrusive
+- Example content:
+  ```json
+  {
+    "latest_message_timestamp": 1730826281.234,
+    "updated_at": "2025-11-05T14:24:41.234567+00:00"
+  }
+  ```
 
 ## Weekly/Incremental Exports
 
@@ -205,7 +257,15 @@ When you run the script weekly:
 2. Only fetches messages newer than that timestamp (unless `--start-date` is explicitly provided)
 3. Creates a new dated file in the same folder
 4. Saves the latest message timestamp to a metadata file in Drive (for next run)
-5. Shares the folder with participants (duplicate shares are handled gracefully)
+5. Checks folder permissions before sharing:
+   - If participants already have access, no additional notifications are sent
+   - Only new participants receive email notifications
+   - This prevents duplicate notifications on subsequent runs
+
+**What Participants See:**
+- **First share:** Participants receive an email notification from Google Drive that they've been given access to a folder
+- **Subsequent runs:** No notifications sent (permissions already exist)
+- **Folder contents:** All weekly export files accumulate in the folder, creating a complete history over time
 
 This means you can share the folder with participants, and they'll see all the weekly export files accumulating over time. The script works identically whether run locally or in CI/CD - no state persistence between runs is required.
 
@@ -224,6 +284,104 @@ slack-export:
 ```
 
 Set the required environment variables in GitLab CI/CD settings.
+
+## Environment Variables Reference
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SLACK_BOT_TOKEN` | Yes | Slack bot token (starts with `xoxb-` or `xoxp-`) |
+| `GOOGLE_DRIVE_CREDENTIALS_FILE` | Yes | Path to Google Drive API credentials JSON file |
+| `GOOGLE_DRIVE_FOLDER_ID` | No | Google Drive folder ID where exports should be stored (defaults to Drive root) |
+| `GOOGLE_DRIVE_TOKEN_FILE` | No | Path to store OAuth token (defaults to `~/.config/slackfeeder/token.json`) |
+| `SLACK_EXPORT_OUTPUT_DIR` | No | Local directory for exported files (defaults to `slack_exports`) |
+| `MAX_EXPORT_FILE_SIZE_MB` | No | Maximum file size in MB (defaults to 100) |
+| `MAX_MESSAGES_PER_CONVERSATION` | No | Maximum messages per conversation (defaults to 50000) |
+| `MAX_DATE_RANGE_DAYS` | No | Maximum date range in days (defaults to 365) |
+| `LOG_LEVEL` | No | Logging level: DEBUG, INFO, WARNING, ERROR (defaults to INFO) |
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue: "Could not load channels from config/channels.json"**
+- **Solution:** Copy the example file: `cp config/channels.json.example config/channels.json`
+- Then run `python src/main.py --make-ref-files` to populate it
+
+**Issue: "Failed to obtain valid credentials"**
+- **Solution:** Check that your `GOOGLE_DRIVE_CREDENTIALS_FILE` path is correct and the file exists
+- If using a `.env` file, ensure the path is relative to the project root or absolute
+
+**Issue: "Token file permissions are insecure"**
+- **Solution:** The token file must have permissions 600 (owner read/write only)
+- Fix: `chmod 600 ~/.config/slackfeeder/token.json`
+
+**Issue: "Rate limited" errors**
+- **Solution:** The script includes automatic rate limiting and retries. If you see frequent rate limit errors:
+  - The script will automatically retry with exponential backoff
+  - Reduce the number of conversations exported at once
+  - Add delays between runs if running multiple times
+
+**Issue: "No previous export found in Drive, fetching all messages"**
+- **Solution:** This is expected on first run. Subsequent runs will be incremental.
+
+**Issue: Participants receiving duplicate notifications**
+- **Solution:** This shouldn't happen - the script checks permissions before sharing. If it does:
+  - Check that you're using the latest version
+  - Verify the permissions are being checked correctly (check logs for "already shared" messages)
+
+**Issue: Files not appearing in Google Drive**
+- **Solution:** 
+  - Check that `GOOGLE_DRIVE_FOLDER_ID` is correct (if specified)
+  - Verify the Google Drive API credentials have proper permissions
+  - Check the logs for upload errors
+
+## Limitations
+
+- **Slack API Rate Limits:** The script respects Slack API rate limits with automatic retries, but very large workspaces may take time to process
+- **Google Drive API Quotas:** Google Drive has quotas (default: 1,000 requests per 100 seconds per user). The script includes rate limiting to stay within quotas
+- **Large Conversations:** Very large conversations (>50,000 messages) are limited by `MAX_MESSAGES_PER_CONVERSATION`
+- **Date Range:** Maximum date range is limited to 365 days by default (configurable via `MAX_DATE_RANGE_DAYS`)
+- **File Size:** Individual export files are limited to 100MB by default (configurable via `MAX_EXPORT_FILE_SIZE_MB`)
+- **Bot Permissions:** The bot must be a member of channels/groups to export them. Private channels require the bot to be invited.
+
+## Performance Notes
+
+- **Rate Limiting:** The script includes built-in rate limiting for both Slack and Google Drive APIs
+- **Caching:** User information is cached using `people.json` to minimize API calls
+- **Incremental Exports:** Only fetches new messages, significantly reducing API calls on subsequent runs
+- **Batch Processing:** Processes conversations sequentially with small delays to avoid rate limits
+- **API Efficiency:** Permission checks prevent unnecessary share API calls
+
+## FAQ
+
+**Q: Will participants get notified every time I run the script?**
+A: No. Participants receive email notifications only on the first share. Subsequent runs check permissions and skip sharing if the user already has access.
+
+**Q: Can I run this without uploading to Google Drive?**
+A: Yes. Use `--export-history` without `--upload-to-drive`. Files will be saved locally only. Note: Incremental exports only work with `--upload-to-drive` since state is stored in Drive.
+
+**Q: What happens if I delete the metadata file?**
+A: The script will treat it as a new export and fetch all messages. The metadata file will be recreated on the next successful export.
+
+**Q: Can I export specific channels only?**
+A: Yes. Set `"export": false` in `config/channels.json` for channels you don't want to export.
+
+**Q: How do I reset incremental exports and start fresh?**
+A: Either delete the metadata file (`{channel_name}_last_export.json`) in Google Drive, or use `--start-date` to override the automatic behavior.
+
+**Q: Can I run this in CI/CD?**
+A: Yes! The script is fully stateless and works perfectly in CI/CD pipelines. No local state files are required.
+
+**Q: What permissions does the Slack bot need?**
+A: The bot needs these OAuth scopes:
+- `channels:history`, `channels:read`
+- `groups:history`, `groups:read`
+- `im:history`, `im:read`
+- `mpim:history`, `mpim:read`
+- `users:read`, `users:read.email`
+
+**Q: Can I export archived channels?**
+A: The script skips archived channels by default. To export them, you would need to modify the code.
 
 ## Contributing
 
