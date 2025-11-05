@@ -175,12 +175,12 @@ python src/main.py --export-history --upload-to-drive
 **Example Output:**
 ```
 2025-11-05 10:29:22 - INFO - Found 2 conversation(s) to export
-2025-11-05 10:29:22 - INFO - --- Processing conversation: Emily Fox, Jenn Power (C09PHTCPA2F) ---
+2025-11-05 10:29:22 - INFO - --- Processing conversation: Carol Burnett, Betty White (C09WIPCPA2F) ---
 2025-11-05 10:29:22 - INFO - Fetching messages since last export: 2025-11-05 14:24:41 UTC
 2025-11-05 10:29:23 - INFO - Fetched 9 messages on page 1
-2025-11-05 10:29:25 - INFO - Uploaded file 'Emily Fox, Jenn Power_history_2025-11-05_15-29-23.txt'
-2025-11-05 10:29:28 - INFO - Saved export metadata for Emily Fox, Jenn Power
-2025-11-05 10:29:34 - INFO - Shared folder 'Emily Fox, Jenn Power' with 3 participants
+2025-11-05 10:29:25 - INFO - Uploaded file 'Carol Burnett, Betty White_history_2025-11-05_15-29-23.txt'
+2025-11-05 10:29:28 - INFO - Saved export metadata for Carol Burnett, Betty White
+2025-11-05 10:29:34 - INFO - Shared folder 'Carol Burnett, Betty White' with 3 participants
 ```
 
 ## How it Works
