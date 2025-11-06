@@ -202,6 +202,8 @@ class TestGetConversationDisplayName:
     
     def test_group_dm_no_members(self):
         slack_client = Mock(spec=SlackClient)
+        # Mock get_channel_members to return empty list (simulating no members found)
+        slack_client.get_channel_members.return_value = []
         
         channel_info = {
             "id": "G123456",
@@ -211,6 +213,33 @@ class TestGetConversationDisplayName:
         
         result = get_conversation_display_name(channel_info, slack_client)
         assert result.startswith("group_dm_")
+        # Verify that get_channel_members was called when members list is empty
+        slack_client.get_channel_members.assert_called_once_with("G123456")
+    
+    def test_group_dm_members_fetched_dynamically(self):
+        """Test that members are fetched dynamically when missing from channel_info."""
+        slack_client = Mock(spec=SlackClient)
+        # Mock get_channel_members to return member IDs
+        slack_client.get_channel_members.return_value = ["U123", "U456"]
+        # Mock get_user_info to return user details
+        slack_client.get_user_info.side_effect = [
+            {"slackId": "U123", "displayName": "Alice", "email": "alice@example.com"},
+            {"slackId": "U456", "displayName": "Bob", "email": "bob@example.com"}
+        ]
+        
+        channel_info = {
+            "id": "G123456",
+            "is_mpim": True,
+            # members field is missing or empty
+        }
+        
+        result = get_conversation_display_name(channel_info, slack_client)
+        # Should contain both names, sorted
+        assert "Alice" in result
+        assert "Bob" in result
+        assert "," in result
+        # Verify that get_channel_members was called
+        slack_client.get_channel_members.assert_called_once_with("G123456")
     
     def test_missing_id(self):
         slack_client = Mock(spec=SlackClient)

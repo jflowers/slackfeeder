@@ -131,6 +131,10 @@ def get_conversation_display_name(channel_info: Dict[str, Any], slack_client: Sl
     # For group DMs, create a name from participants
     if channel_info.get("is_mpim"):
         members = channel_info.get("members", [])
+        # If members not in channel_info, fetch them dynamically
+        if not members:
+            logger.debug(f"Group DM {channel_id} has no members in channel_info, fetching dynamically")
+            members = slack_client.get_channel_members(channel_id)
         if not members:
             logger.warning(f"Group DM {channel_id} has no members")
             return f"group_dm_{channel_id[:8]}"
