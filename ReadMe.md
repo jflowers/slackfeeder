@@ -144,6 +144,31 @@ Edit `config/channels.json` to control which conversations to export. By default
 
 **Note:** `people.json` is optional but recommended - it speeds up processing by avoiding API lookups for known users. The system will automatically look up new users on-demand if they're not in the cache.
 
+**Opting Out of Notifications:** If someone wants to receive folder access but not email notifications, you can add `"noNotifications": true` to their entry in `people.json`. They will still get folder access, but won't receive email notifications when folders are shared.
+
+**Opting Out of Sharing:** If someone doesn't want to be shared with at all (no folder access), you can add `"noShare": true` to their entry in `people.json`. They will be completely excluded from folder sharing, even if they're a member of the channel.
+
+Example:
+
+```json
+{
+    "people": [
+        {
+            "slackId": "U1234567890",
+            "email": "user@example.com",
+            "displayName": "John Doe",
+            "noNotifications": true
+        },
+        {
+            "slackId": "U0987654321",
+            "email": "noshare@example.com",
+            "displayName": "Jane Smith",
+            "noShare": true
+        }
+    ]
+}
+```
+
 **Configuration Files:** The `config/channels.json` and `config/people.json` files are **not tracked in git** (they're in `.gitignore`) because they contain user-specific settings. Example files (`config/channels.json.example` and `config/people.json.example`) are provided as templates. If you're forking this repository, you can commit your config files to your fork - they won't conflict with upstream updates since they're ignored in the upstream repository.
 
 ### 3. Export and Upload

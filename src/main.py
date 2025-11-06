@@ -280,6 +280,8 @@ def main(args):
 
         # Load people.json as a cache/pre-warming mechanism (optional - will lookup on-demand if missing)
         people_cache = {}
+        no_notifications_set = set()  # Set of emails who have opted out of notifications
+        no_share_set = set()  # Set of emails who have opted out of being shared with
         people_json = load_json_file("config/people.json")
         if people_json:
             # Validate people.json structure
@@ -290,7 +292,19 @@ def main(args):
                 people_cache = {}
             else:
                 people_cache = {p["slackId"]: p["displayName"] for p in people_json.get("people", [])}
+                # Build sets of opt-out preferences
+                for p in people_json.get("people", []):
+                    if p.get("email"):
+                        email_lower = p["email"].lower()
+                        if p.get("noNotifications") is True:
+                            no_notifications_set.add(email_lower)
+                        if p.get("noShare") is True:
+                            no_share_set.add(email_lower)
                 logger.info(f"Loaded {len(people_cache)} users from people.json cache")
+                if no_notifications_set:
+                    logger.info(f"Found {len(no_notifications_set)} user(s) who have opted out of notifications")
+                if no_share_set:
+                    logger.info(f"Found {len(no_share_set)} user(s) who have opted out of being shared with")
         else:
             logger.info("No people.json found - will lookup users on-demand from Slack API")
         
@@ -539,7 +553,9 @@ Total Messages: {len(history)}
                                 if user_info and user_info.get("email"):
                                     email = user_info["email"]
                                     if validate_email(email):
-                                        current_member_emails.add(email.lower())
+                                        # Only include if they haven't opted out of sharing
+                                        if email.lower() not in no_share_set:
+                                            current_member_emails.add(email.lower())
                             
                             # Revoke access for people who are no longer members
                             revoked_count = 0
@@ -594,9 +610,19 @@ Total Messages: {len(history)}
                                         logger.warning(f"Invalid email format: {email}. Skipping.")
                                         continue
                                     
+                                    # Skip if user has opted out of being shared with
+                                    if email.lower() in no_share_set:
+                                        logger.debug(f"User {email} has opted out of being shared with, skipping")
+                                        continue
+                                    
                                     if email not in shared_emails:
                                         try:
-                                            shared = google_drive_client.share_folder(folder_id, email)
+                                            # Check if user has opted out of notifications
+                                            send_notification = email.lower() not in no_notifications_set
+                                            if not send_notification:
+                                                logger.debug(f"User {email} has opted out of notifications, sharing without notification")
+                                            
+                                            shared = google_drive_client.share_folder(folder_id, email, send_notification=send_notification)
                                             if shared:
                                                 shared_emails.add(email)
                                                 stats['shared'] += 1

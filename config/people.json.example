@@ -4,6 +4,18 @@
             "slackId": "U1234567890",
             "email": "user@example.com",
             "displayName": "John Doe"
+        },
+        {
+            "slackId": "U0987654321",
+            "email": "optout@example.com",
+            "displayName": "Jane Smith",
+            "noNotifications": true
+        },
+        {
+            "slackId": "U1122334455",
+            "email": "noshare@example.com",
+            "displayName": "Bob Johnson",
+            "noShare": true
         }
     ]
 }
