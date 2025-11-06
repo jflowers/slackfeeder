@@ -138,19 +138,25 @@ class SlackClient:
         return member_ids
 
     def get_all_channels(self):
-        """Fetches all channels the bot is a member of (including DMs and group chats).
+        """Fetches all channels and group chats the bot is a member of.
+        
+        Excludes direct messages (DMs) between the bot and individuals.
+        Only includes:
+        - Public channels
+        - Private channels
+        - Group DMs (mpim)
         
         Returns:
             List of conversation objects with detailed info
         """
         all_channels_list = []
         channels_cursor = None
-        logger.info("Starting to fetch conversations the bot is a member of...")
+        logger.info("Starting to fetch conversations the bot is a member of (excluding DMs)...")
 
         while True:
             try:
                 response = self.client.users_conversations(
-                    types="public_channel,private_channel,mpim,im",
+                    types="public_channel,private_channel,mpim",
                     limit=CONVERSATIONS_PAGE_SIZE,
                     cursor=channels_cursor
                 )
@@ -174,6 +180,11 @@ class SlackClient:
                     try:
                         channel_info_response = self.client.conversations_info(channel=channel_id)
                         channel_detail = channel_info_response.get("channel", {})
+                        
+                        # Skip direct messages (DMs) - safety check in case any slip through
+                        if channel_detail.get("is_im"):
+                            logger.debug(f"Skipping direct message: {channel_id}")
+                            continue
                         
                         # Construct a more detailed channel object
                         channel_obj = {

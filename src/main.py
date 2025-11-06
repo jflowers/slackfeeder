@@ -204,6 +204,9 @@ def main(args):
         logger.info("Fetching all conversations and users to create reference files...")
         channels = slack_client.get_all_channels()
         
+        # Filter out any direct messages (DMs) - safety check
+        channels = [ch for ch in channels if not ch.get("is_im")]
+        
         # Add export flag (defaults to true) to each conversation
         # Preserve existing export flags if channels.json already exists
         existing_channels_data = load_json_file("config/channels.json")
