@@ -646,3 +646,58 @@ class GoogleDriveClient:
             logger.warning(f"Error sharing folder: {e}")
             return False
 
+    def revoke_folder_access(self, folder_id: str, email_address: str) -> bool:
+        """Revokes access to a folder for a specific user.
+        
+        Args:
+            folder_id: Google Drive folder ID
+            email_address: Email address of user to revoke access from
+            
+        Returns:
+            True if successful or permission not found, False otherwise
+        """
+        # Validate folder ID
+        if not self._validate_folder_id(folder_id):
+            logger.error(f"Invalid folder ID format: {folder_id}")
+            return False
+        
+        if not email_address or not email_address.strip():
+            logger.warning(f"Invalid email address provided: {email_address}")
+            return False
+        
+        email_address = email_address.strip().lower()
+        
+        # Get current permissions
+        existing_permissions = self.get_folder_permissions(folder_id)
+        permission_id = None
+        
+        for perm in existing_permissions:
+            if (perm.get('type') == 'user' and 
+                perm.get('emailAddress', '').lower() == email_address):
+                permission_id = perm.get('id')
+                break
+        
+        if not permission_id:
+            logger.debug(f"User {email_address} does not have access to folder {folder_id}")
+            return True  # Already doesn't have access, consider it success
+        
+        # Revoke the permission
+        try:
+            self._rate_limit()
+            self.service.permissions().delete(
+                fileId=folder_id,
+                permissionId=permission_id
+            ).execute()
+            logger.info(f"Revoked access to folder {folder_id} for {email_address}")
+            return True
+        except HttpError as error:
+            if error.resp.status == 404:
+                # Permission doesn't exist, that's fine
+                logger.debug(f"Permission not found for {email_address} on folder {folder_id}")
+                return True
+            logger.error(f"An error occurred while revoking access to folder {folder_id} for {email_address}: {error}")
+            return False
+        except Exception as e:
+            logger.warning(f"Error revoking folder access: {e}")
+            return False
+

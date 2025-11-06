@@ -529,6 +529,55 @@ Total Messages: {len(history)}
                                 logger.warning(f"No members found for {channel_name}. Skipping sharing.")
                                 continue
                             
+                            # Get current folder permissions to identify who should have access removed
+                            current_permissions = google_drive_client.get_folder_permissions(folder_id)
+                            current_member_emails = set()
+                            
+                            # Build set of current member emails
+                            for member_id in members:
+                                user_info = slack_client.get_user_info(member_id)
+                                if user_info and user_info.get("email"):
+                                    email = user_info["email"]
+                                    if validate_email(email):
+                                        current_member_emails.add(email.lower())
+                            
+                            # Revoke access for people who are no longer members
+                            revoked_count = 0
+                            revoke_errors = []
+                            for perm in current_permissions:
+                                # Only revoke user permissions (not owner, domain, etc.)
+                                if perm.get('type') != 'user':
+                                    continue
+                                
+                                # Don't revoke owner permissions
+                                if perm.get('role') == 'owner':
+                                    continue
+                                
+                                perm_email = perm.get('emailAddress', '').lower()
+                                if not perm_email:
+                                    continue
+                                
+                                # If this email is not in current members, revoke access
+                                if perm_email not in current_member_emails:
+                                    try:
+                                        # Rate limit revoke operations
+                                        if revoked_count > 0 and revoked_count % SHARE_RATE_LIMIT_INTERVAL == 0:
+                                            time.sleep(SHARE_RATE_LIMIT_DELAY)
+                                        
+                                        revoked = google_drive_client.revoke_folder_access(folder_id, perm_email)
+                                        if revoked:
+                                            revoked_count += 1
+                                        else:
+                                            revoke_errors.append(f"{perm_email}: revoke failed")
+                                    except Exception as e:
+                                        revoke_errors.append(f"{perm_email}: {str(e)}")
+                            
+                            if revoked_count > 0:
+                                logger.info(f"Revoked access for {revoked_count} user(s) no longer in {channel_name}")
+                            if revoke_errors:
+                                logger.warning(f"Failed to revoke access for some users: {', '.join(revoke_errors)}")
+                            
+                            # Share with current members
                             shared_emails = set()
                             share_errors = []
                             share_failures = 0
