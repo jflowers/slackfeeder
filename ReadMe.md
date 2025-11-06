@@ -7,7 +7,7 @@ This project exports conversations from Slack, processes them into a human-reada
 - Export conversation history from public channels, private channels, DMs, and group chats
 - Processes Slack's JSON export into a clean, readable text format with human-readable timestamps
 - Creates and organizes conversations in Google Drive folders named with display names
-- Automatically shares folders with all conversation participants
+- Automatically shares folders with all conversation participants and keeps access synchronized with channel membership
 - Uses environment variables for secure configuration (perfect for CI/CD pipelines)
 - Handles existing folders gracefully (reuses existing folders, updates files)
 
@@ -216,11 +216,13 @@ python src/main.py --export-history --upload-to-drive
      - Creates/updates a metadata file (`{channel_name}_last_export.json`) in each folder
      - Stores the timestamp of the latest message exported
      - Used by subsequent runs to determine what's new
-   - Checks existing folder permissions before sharing:
+   - Manages folder permissions to keep access synchronized with channel membership:
+     - Checks existing folder permissions before sharing
      - If user already has access, skips the share API call (prevents duplicate notifications)
      - Only shares with users who don't already have access
+     - Automatically revokes access for users who are no longer channel members
      - Users receive email notifications only on first share
-   - Shares the folder with all conversation participants via email
+   - Shares the folder with all current conversation participants via email
    - On subsequent runs, only fetches messages since the last export
 
 ## Folder Structure
@@ -230,7 +232,7 @@ Each conversation gets its own folder in Google Drive, named with the conversati
 - DMs: Uses the other participant's name (e.g., `John Doe`)
 - Group chats: Uses comma-separated participant names (e.g., `John Doe, Jane Smith`)
 
-All participants are automatically added as viewers to the folder, allowing them to access the conversation history.
+All current participants are automatically added as viewers to the folder, allowing them to access the conversation history. When members are added or removed from a channel, folder access is automatically updated on the next export run.
 
 **Metadata Files:** Each folder contains a small metadata file (`{channel_name}_last_export.json`) that tracks the last export timestamp. This file:
 - Is created automatically on first export
@@ -262,9 +264,10 @@ When you run the script weekly:
 2. Only fetches messages newer than that timestamp (unless `--start-date` is explicitly provided)
 3. Creates a new dated file in the same folder
 4. Saves the latest message timestamp to a metadata file in Drive (for next run)
-5. Checks folder permissions before sharing:
+5. Manages folder permissions to keep access synchronized with channel membership:
    - If participants already have access, no additional notifications are sent
    - Only new participants receive email notifications
+   - Automatically revokes access for users who are no longer channel members
    - This prevents duplicate notifications on subsequent runs
 
 **What Participants See:**
@@ -360,7 +363,7 @@ Set the required environment variables in GitLab CI/CD settings.
 ## FAQ
 
 **Q: Will participants get notified every time I run the script?**
-A: No. Participants receive email notifications only on the first share. Subsequent runs check permissions and skip sharing if the user already has access.
+A: No. Participants receive email notifications only on the first share. Subsequent runs check permissions and skip sharing if the user already has access. If someone is removed from a channel, their access is automatically revoked (no notification sent), and if someone is added, they automatically receive access (with notification on first share).
 
 **Q: Can I run this without uploading to Google Drive?**
 A: Yes. Use `--export-history` without `--upload-to-drive`. Files will be saved locally only. Note: Incremental exports only work with `--upload-to-drive` since state is stored in Drive.
@@ -387,6 +390,9 @@ A: The bot needs these OAuth scopes:
 
 **Q: Can I export a conversation without sharing it with participants?**
 A: Yes. Set `"share": false"` in `config/channels.json` for that conversation. The folder will be created and files uploaded, but participants won't be given access.
+
+**Q: What happens when someone is added or removed from a private channel?**
+A: Folder access is automatically synchronized with channel membership on each export run. When someone is added to a channel, they automatically receive folder access (with email notification on first share). When someone is removed from a channel, their folder access is automatically revoked (no notification sent). This ensures only current channel members have access to the exported conversation history.
 
 **Q: Can I export archived channels?**
 A: The script skips archived channels by default. To export them, you would need to modify the code.
