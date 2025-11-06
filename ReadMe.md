@@ -120,7 +120,8 @@ Edit `config/channels.json` to control which conversations to export. By default
         {
             "id": "C04KU2JTDJR",
             "displayName": "team-orange",
-            "export": true
+            "export": true,
+            "share": true
         },
         {
             "id": "C05LGUSIA25",
@@ -128,13 +129,17 @@ Edit `config/channels.json` to control which conversations to export. By default
             "export": false
         },
         {
-            "id": "D1234567890"
+            "id": "D1234567890",
+            "export": true,
+            "share": false
         }
     ]
 }
 ```
 
 - If `export` is not specified, it defaults to `true` (will be exported)
+- If `share` is not specified, it defaults to `true` (folder will be shared with participants)
+- Set `"share": false"` to export the conversation but not share the folder with participants
 - If `displayName` is not provided, the script will automatically fetch it from Slack (for channels) or construct it from participant names (for DMs and group chats)
 
 **Note:** `people.json` is optional but recommended - it speeds up processing by avoiding API lookups for known users. The system will automatically look up new users on-demand if they're not in the cache.
@@ -379,6 +384,9 @@ A: The bot needs these OAuth scopes:
 - `im:history`, `im:read`
 - `mpim:history`, `mpim:read`
 - `users:read`, `users:read.email`
+
+**Q: Can I export a conversation without sharing it with participants?**
+A: Yes. Set `"share": false"` in `config/channels.json` for that conversation. The folder will be created and files uploaded, but participants won't be given access.
 
 **Q: Can I export archived channels?**
 A: The script skips archived channels by default. To export them, you would need to modify the code.

@@ -3,12 +3,14 @@
         {
             "id": "C04KU2JTDJR",
             "displayName": "team-orange",
-            "export": true
+            "export": true,
+            "share": true
         },
         {
             "id": "C05LGUSIA25",
             "displayName": "proj-clasp",
-            "export": true
+            "export": true,
+            "share": false
         }
     ]
 }

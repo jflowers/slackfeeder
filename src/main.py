@@ -504,47 +504,52 @@ Total Messages: {len(history)}
                         else:
                             google_drive_client.save_export_metadata(folder_id, safe_channel_name, str(datetime.now(timezone.utc).timestamp()))
                         
-                        # Share with members (with rate limiting)
-                        members = slack_client.get_channel_members(channel_id)
-                        if not members:
-                            logger.warning(f"No members found for {channel_name}. Skipping sharing.")
-                            continue
-                        
-                        shared_emails = set()
-                        share_errors = []
-                        share_failures = 0
-                        for i, member_id in enumerate(members):
-                            # Rate limit: pause every N shares to avoid API limits
-                            if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
-                                time.sleep(SHARE_RATE_LIMIT_DELAY)
+                        # Share with members (with rate limiting) - check if sharing is enabled
+                        # Default to True if not specified (backward compatible)
+                        should_share = channel_info.get("share", True)
+                        if not should_share:
+                            logger.info(f"Sharing disabled for {channel_name} (share: false in channels.json)")
+                        else:
+                            members = slack_client.get_channel_members(channel_id)
+                            if not members:
+                                logger.warning(f"No members found for {channel_name}. Skipping sharing.")
+                                continue
                             
-                            user_info = slack_client.get_user_info(member_id)
-                            if user_info and user_info.get("email"):
-                                email = user_info["email"]
-                                # Validate email format
-                                if not validate_email(email):
-                                    logger.warning(f"Invalid email format: {email}. Skipping.")
-                                    continue
+                            shared_emails = set()
+                            share_errors = []
+                            share_failures = 0
+                            for i, member_id in enumerate(members):
+                                # Rate limit: pause every N shares to avoid API limits
+                                if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
+                                    time.sleep(SHARE_RATE_LIMIT_DELAY)
                                 
-                                if email not in shared_emails:
-                                    try:
-                                        shared = google_drive_client.share_folder(folder_id, email)
-                                        if shared:
-                                            shared_emails.add(email)
-                                            stats['shared'] += 1
-                                        else:
-                                            share_errors.append(f"{email}: share failed")
+                                user_info = slack_client.get_user_info(member_id)
+                                if user_info and user_info.get("email"):
+                                    email = user_info["email"]
+                                    # Validate email format
+                                    if not validate_email(email):
+                                        logger.warning(f"Invalid email format: {email}. Skipping.")
+                                        continue
+                                    
+                                    if email not in shared_emails:
+                                        try:
+                                            shared = google_drive_client.share_folder(folder_id, email)
+                                            if shared:
+                                                shared_emails.add(email)
+                                                stats['shared'] += 1
+                                            else:
+                                                share_errors.append(f"{email}: share failed")
+                                                share_failures += 1
+                                        except Exception as e:
+                                            share_errors.append(f"{email}: {str(e)}")
                                             share_failures += 1
-                                    except Exception as e:
-                                        share_errors.append(f"{email}: {str(e)}")
-                                        share_failures += 1
-                        
-                        stats['share_failed'] += share_failures
-                        
-                        if share_errors:
-                            logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
-                        
-                        logger.info(f"Shared folder '{sanitized_folder_name}' with {len(shared_emails)} participants")
+                            
+                            stats['share_failed'] += share_failures
+                            
+                            if share_errors:
+                                logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
+                            
+                            logger.info(f"Shared folder '{sanitized_folder_name}' with {len(shared_emails)} participants")
             else:
                 logger.warning(f"No history found for {channel_name} ({channel_id})")
                 stats['skipped'] += 1
