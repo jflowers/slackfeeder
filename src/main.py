@@ -208,13 +208,15 @@ def main(args):
         channels = [ch for ch in channels if not ch.get("is_im")]
         
         # Add export flag (defaults to true) to each conversation
-        # Preserve existing export flags if channels.json already exists
+        # Preserve existing export and share flags if channels.json already exists
         existing_channels_data = load_json_file("config/channels.json")
         existing_export_map = {}
+        existing_share_map = {}
         if existing_channels_data:
             for ch in existing_channels_data.get("channels", []):
                 if "id" in ch:
                     existing_export_map[ch["id"]] = ch.get("export", True)
+                    existing_share_map[ch["id"]] = ch.get("share", True)
         
         channels_with_export = []
         for channel in channels:
@@ -224,6 +226,11 @@ def main(args):
                 channel_entry["export"] = existing_export_map[channel_entry.get("id")]
             elif "export" not in channel_entry:
                 channel_entry["export"] = True
+            # Preserve existing share setting, or default to True
+            if channel_entry.get("id") in existing_share_map:
+                channel_entry["share"] = existing_share_map[channel_entry.get("id")]
+            elif "share" not in channel_entry:
+                channel_entry["share"] = True
             channels_with_export.append(channel_entry)
         
         people = {}
