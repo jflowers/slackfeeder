@@ -2,8 +2,9 @@ import argparse
 import os
 import sys
 import time
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any, Tuple
+from calendar import monthrange
 
 # Add project root to Python path so imports work regardless of how script is invoked
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,6 +43,9 @@ MAX_MESSAGES_PER_CONVERSATION = int(os.getenv('MAX_MESSAGES_PER_CONVERSATION', '
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 # Maximum date range in days (1 year)
 MAX_DATE_RANGE_DAYS = int(os.getenv('MAX_DATE_RANGE_DAYS', '365'))
+# Chunking thresholds for bulk exports
+CHUNK_DATE_RANGE_DAYS = 30  # Chunk if date range exceeds this
+CHUNK_MESSAGE_THRESHOLD = 10000  # Chunk if message count exceeds this
 
 def preprocess_history(history_data: List[Dict[str, Any]], slack_client: SlackClient, people_cache: Optional[Dict[str, str]] = None) -> str:
     """Processes Slack history into a human-readable format."""
@@ -160,6 +164,117 @@ def get_conversation_display_name(channel_info: Dict[str, Any], slack_client: Sl
     # For channels, use name or fallback to ID
     name = channel_info.get("name") or channel_id
     return name if name else f"conversation_{channel_id[:8]}"
+
+def should_chunk_export(history: List[Dict[str, Any]], oldest_ts: Optional[str], latest_ts: Optional[str], bulk_export: bool) -> bool:
+    """Determine if export should be chunked based on thresholds.
+    
+    Args:
+        history: List of messages
+        oldest_ts: Oldest timestamp (Unix timestamp string)
+        latest_ts: Latest timestamp (Unix timestamp string)
+        bulk_export: Whether bulk export mode is enabled
+        
+    Returns:
+        True if export should be chunked, False otherwise
+    """
+    if not bulk_export:
+        return False
+    
+    if not history:
+        return False
+    
+    # Check message count threshold
+    if len(history) > CHUNK_MESSAGE_THRESHOLD:
+        return True
+    
+    # Check date range threshold - calculate from messages if timestamps not provided
+    if oldest_ts and latest_ts:
+        date_range_days = (float(latest_ts) - float(oldest_ts)) / 86400
+        if date_range_days > CHUNK_DATE_RANGE_DAYS:
+            return True
+    elif len(history) > 1:
+        # Calculate date range from messages themselves
+        timestamps = [float(msg.get('ts', 0)) for msg in history if msg.get('ts')]
+        if timestamps:
+            min_ts = min(timestamps)
+            max_ts = max(timestamps)
+            date_range_days = (max_ts - min_ts) / 86400
+            if date_range_days > CHUNK_DATE_RANGE_DAYS:
+                return True
+    
+    return False
+
+def split_messages_by_month(history: List[Dict[str, Any]]) -> List[Tuple[datetime, datetime, List[Dict[str, Any]]]]:
+    """Split messages into monthly chunks.
+    
+    Args:
+        history: List of messages sorted by timestamp
+        
+    Returns:
+        List of tuples: (start_date, end_date, messages_for_month)
+    """
+    if not history:
+        return []
+    
+    chunks = []
+    current_month_start = None
+    current_chunk = []
+    
+    for message in history:
+        ts = float(message.get('ts', 0))
+        msg_date = datetime.fromtimestamp(ts, tz=timezone.utc)
+        
+        # Determine month boundaries
+        month_start = datetime(msg_date.year, msg_date.month, 1, tzinfo=timezone.utc)
+        
+        if current_month_start is None or month_start != current_month_start:
+            # Save previous chunk if it exists
+            if current_chunk:
+                # Calculate end of previous month
+                last_msg_ts = float(current_chunk[-1].get('ts', 0))
+                last_msg_date = datetime.fromtimestamp(last_msg_ts, tz=timezone.utc)
+                days_in_month = monthrange(last_msg_date.year, last_msg_date.month)[1]
+                month_end = datetime(
+                    last_msg_date.year, 
+                    last_msg_date.month, 
+                    days_in_month, 
+                    23, 59, 59, 
+                    tzinfo=timezone.utc
+                )
+                chunks.append((current_month_start, month_end, current_chunk))
+            
+            # Start new chunk
+            current_month_start = month_start
+            current_chunk = []
+        
+        current_chunk.append(message)
+    
+    # Add final chunk
+    if current_chunk:
+        last_msg_ts = float(current_chunk[-1].get('ts', 0))
+        last_msg_date = datetime.fromtimestamp(last_msg_ts, tz=timezone.utc)
+        days_in_month = monthrange(last_msg_date.year, last_msg_date.month)[1]
+        month_end = datetime(
+            last_msg_date.year, 
+            last_msg_date.month, 
+            days_in_month, 
+            23, 59, 59, 
+            tzinfo=timezone.utc
+        )
+        chunks.append((current_month_start, month_end, current_chunk))
+    
+    return chunks
+
+def estimate_file_size(processed_history: str) -> int:
+    """Estimate file size in bytes.
+    
+    Args:
+        processed_history: Processed history text
+        
+    Returns:
+        Estimated size in bytes
+    """
+    return len(processed_history.encode('utf-8'))
 
 def main(args):
     """Main function to run the Slack history export and upload process."""
@@ -345,6 +460,14 @@ def main(args):
         
         total_conversations = len(channels_to_export)
         logger.info(f"Starting export of {total_conversations} conversation(s)")
+        
+        # Override limits if bulk export is enabled
+        effective_max_date_range = None if args.bulk_export else MAX_DATE_RANGE_DAYS
+        effective_max_messages = None if args.bulk_export else MAX_MESSAGES_PER_CONVERSATION
+        effective_max_file_size = None if args.bulk_export else MAX_FILE_SIZE_BYTES
+        
+        if args.bulk_export:
+            logger.info("Bulk export mode enabled - limits overridden for large exports")
 
         for idx, channel_info in enumerate(channels_to_export, 1):
             # Validate channel_info structure
@@ -414,10 +537,10 @@ def main(args):
                     stats['skipped'] += 1
                     continue
                 
-                # Validate date range doesn't exceed maximum
+                # Validate date range doesn't exceed maximum (unless bulk export)
                 date_range_days = (float(latest_ts) - float(oldest_ts)) / 86400  # Convert seconds to days
-                if date_range_days > MAX_DATE_RANGE_DAYS:
-                    logger.error(f"Date range ({date_range_days:.0f} days) exceeds maximum allowed ({MAX_DATE_RANGE_DAYS} days)")
+                if effective_max_date_range and date_range_days > effective_max_date_range:
+                    logger.error(f"Date range ({date_range_days:.0f} days) exceeds maximum allowed ({effective_max_date_range} days). Use --bulk-export to override.")
                     stats['skipped'] += 1
                     continue
 
@@ -428,9 +551,9 @@ def main(args):
             )
 
             if history:
-                # Check for input size limits
-                if len(history) > MAX_MESSAGES_PER_CONVERSATION:
-                    logger.error(f"Conversation {channel_name} exceeds maximum message limit ({MAX_MESSAGES_PER_CONVERSATION}). Skipping.")
+                # Check for input size limits (unless bulk export)
+                if effective_max_messages and len(history) > effective_max_messages:
+                    logger.error(f"Conversation {channel_name} exceeds maximum message limit ({effective_max_messages}). Use --bulk-export to override.")
                     stats['skipped'] += 1
                     continue
                 
@@ -438,6 +561,206 @@ def main(args):
                 if len(history) > LARGE_CONVERSATION_THRESHOLD:
                     logger.warning(f"Large conversation detected ({len(history)} messages). This may take a while and use significant memory.")
                 
+                # Determine if we should chunk this export
+                should_chunk = should_chunk_export(history, oldest_ts, latest_ts, args.bulk_export)
+                
+                if should_chunk:
+                    logger.info(f"Large export detected - splitting into monthly chunks for {channel_name}")
+                    chunks = split_messages_by_month(history)
+                    logger.info(f"Split into {len(chunks)} monthly chunk(s)")
+                    
+                    # Process each chunk
+                    chunk_files = []
+                    for chunk_idx, (chunk_start, chunk_end, chunk_messages) in enumerate(chunks, 1):
+                        logger.info(f"Processing chunk {chunk_idx}/{len(chunks)}: {chunk_start.strftime('%Y-%m')} ({len(chunk_messages)} messages)")
+                        
+                        processed_history = preprocess_history(chunk_messages, slack_client, people_cache)
+                        
+                        # Check for empty history after processing
+                        if not processed_history or not processed_history.strip():
+                            logger.warning(f"No processable content found for chunk {chunk_idx} of {channel_name}. Skipping.")
+                            continue
+                        
+                        # Add metadata header for chunk
+                        export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                        date_range_str = f"{chunk_start.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}"
+                        metadata_header = f"""Slack Conversation Export
+Channel: {channel_name}
+Channel ID: {channel_id}
+Export Date: {export_date}
+Date Range: {date_range_str}
+Total Messages: {len(chunk_messages)}
+Chunk: {chunk_idx} of {len(chunks)}
+
+{'='*80}
+
+"""
+                        processed_history = metadata_header + processed_history
+                        
+                        # Estimate file size
+                        estimated_size = estimate_file_size(processed_history)
+                        if effective_max_file_size and estimated_size > effective_max_file_size:
+                            logger.warning(f"Estimated file size ({estimated_size / 1024 / 1024:.2f} MB) exceeds maximum ({effective_max_file_size / 1024 / 1024:.2f} MB) for chunk {chunk_idx}. File will still be created.")
+                        
+                        # Create filename with date range
+                        safe_channel_name = sanitize_filename(channel_name)
+                        month_str = chunk_start.strftime("%Y-%m")
+                        export_datetime = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+                        output_filename = f"{safe_channel_name}_history_{month_str}_{export_datetime}.txt"
+                        output_filepath = os.path.join(output_dir, output_filename)
+                        
+                        # Additional safety check - ensure path is within output_dir
+                        abs_output_dir = os.path.abspath(output_dir)
+                        abs_output_filepath = os.path.abspath(output_filepath)
+                        if not abs_output_filepath.startswith(abs_output_dir):
+                            logger.error(f"Invalid file path detected: {output_filepath}. Skipping chunk {chunk_idx}.")
+                            stats['failed'] += 1
+                            continue
+                        
+                        try:
+                            with open(output_filepath, 'w', encoding='utf-8') as f:
+                                f.write(processed_history)
+                                f.flush()
+                                os.fsync(f.fileno())  # Ensure data is written to disk
+                            
+                            # Verify file was written successfully and check size
+                            if not os.path.exists(output_filepath):
+                                logger.error(f"File write verification failed for {output_filepath}")
+                                stats['failed'] += 1
+                                continue
+                            
+                            file_size = os.path.getsize(output_filepath)
+                            if file_size == 0:
+                                logger.error(f"File write verification failed - empty file: {output_filepath}")
+                                stats['failed'] += 1
+                                continue
+                            
+                            if effective_max_file_size and file_size > effective_max_file_size:
+                                logger.warning(f"File size ({file_size / 1024 / 1024:.2f} MB) exceeds maximum ({effective_max_file_size / 1024 / 1024:.2f} MB) for {output_filepath}. File created but may cause issues.")
+                            
+                            chunk_files.append((output_filepath, chunk_messages))
+                            stats['processed'] += 1
+                            stats['total_messages'] += len(chunk_messages)
+                            logger.info(f"Saved chunk {chunk_idx} to {output_filepath} ({file_size / 1024 / 1024:.2f} MB)")
+                        except IOError as e:
+                            logger.error(f"Failed to write file {output_filepath}: {e}")
+                            stats['failed'] += 1
+                            continue
+                        except Exception as e:
+                            logger.error(f"Unexpected error writing file {output_filepath}: {e}", exc_info=True)
+                            stats['failed'] += 1
+                            continue
+                    
+                    # Upload chunked files to Drive if requested
+                    if args.upload_to_drive and chunk_files:
+                        sanitized_folder_name = sanitize_folder_name(channel_name)
+                        safe_channel_name = sanitize_filename(channel_name)
+                        folder_id = google_drive_client.create_folder(sanitized_folder_name, google_drive_folder_id)
+                        if folder_id:
+                            for chunk_filepath, chunk_messages in chunk_files:
+                                file_id = google_drive_client.upload_file(chunk_filepath, folder_id)
+                                if not file_id:
+                                    logger.error(f"Failed to upload chunk file {chunk_filepath}")
+                                    stats['upload_failed'] += 1
+                                else:
+                                    stats['uploaded'] += 1
+                            
+                            # Save export metadata with latest timestamp from all chunks
+                            if history:
+                                latest_message_ts = max(float(msg.get('ts', 0)) for msg in history)
+                                google_drive_client.save_export_metadata(folder_id, safe_channel_name, str(latest_message_ts))
+                                logger.info(f"Saved export metadata for {channel_name}")
+                            
+                            # Share folder with members (same logic as single file export)
+                            should_share = channel_info.get("share", True)
+                            if not should_share:
+                                logger.info(f"Sharing disabled for {channel_name} (share: false in channels.json)")
+                            else:
+                                members = slack_client.get_channel_members(channel_id)
+                                if not members:
+                                    logger.warning(f"No members found for {channel_name}. Skipping sharing.")
+                                    continue
+                                
+                                # Get current folder permissions to identify who should have access removed
+                                current_permissions = google_drive_client.get_folder_permissions(folder_id)
+                                current_member_emails = set()
+                                
+                                # Build set of current member emails
+                                for member_id in members:
+                                    user_info = slack_client.get_user_info(member_id)
+                                    if user_info and user_info.get("email"):
+                                        email = user_info["email"]
+                                        if validate_email(email):
+                                            if email.lower() not in no_share_set:
+                                                current_member_emails.add(email.lower())
+                                
+                                # Revoke access for people who are no longer members
+                                revoked_count = 0
+                                revoke_errors = []
+                                for perm in current_permissions:
+                                    if perm.get('type') != 'user':
+                                        continue
+                                    if perm.get('role') == 'owner':
+                                        continue
+                                    perm_email = perm.get('emailAddress', '').lower()
+                                    if not perm_email:
+                                        continue
+                                    if perm_email not in current_member_emails:
+                                        try:
+                                            if revoked_count > 0 and revoked_count % SHARE_RATE_LIMIT_INTERVAL == 0:
+                                                time.sleep(SHARE_RATE_LIMIT_DELAY)
+                                            revoked = google_drive_client.revoke_folder_access(folder_id, perm_email)
+                                            if revoked:
+                                                revoked_count += 1
+                                            else:
+                                                revoke_errors.append(f"{perm_email}: revoke failed")
+                                        except Exception as e:
+                                            revoke_errors.append(f"{perm_email}: {str(e)}")
+                                
+                                if revoked_count > 0:
+                                    logger.info(f"Revoked access for {revoked_count} user(s) no longer in {channel_name}")
+                                if revoke_errors:
+                                    logger.warning(f"Failed to revoke access for some users: {', '.join(revoke_errors)}")
+                                
+                                # Share with current members
+                                shared_emails = set()
+                                share_errors = []
+                                share_failures = 0
+                                for i, member_id in enumerate(members):
+                                    if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
+                                        time.sleep(SHARE_RATE_LIMIT_DELAY)
+                                    user_info = slack_client.get_user_info(member_id)
+                                    if user_info and user_info.get("email"):
+                                        email = user_info["email"]
+                                        if not validate_email(email):
+                                            logger.warning(f"Invalid email format: {email}. Skipping.")
+                                            continue
+                                        if email.lower() in no_share_set:
+                                            logger.debug(f"User {email} has opted out of being shared with, skipping")
+                                            continue
+                                        if email not in shared_emails:
+                                            try:
+                                                send_notification = email.lower() not in no_notifications_set
+                                                if not send_notification:
+                                                    logger.debug(f"User {email} has opted out of notifications, sharing without notification")
+                                                shared = google_drive_client.share_folder(folder_id, email, send_notification=send_notification)
+                                                if shared:
+                                                    shared_emails.add(email)
+                                                    stats['shared'] += 1
+                                                else:
+                                                    share_errors.append(f"{email}: share failed")
+                                                    share_failures += 1
+                                            except Exception as e:
+                                                share_errors.append(f"{email}: {str(e)}")
+                                                share_failures += 1
+                                
+                                stats['share_failed'] += share_failures
+                                if share_errors:
+                                    logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
+                                logger.info(f"Shared folder '{sanitized_folder_name}' with {len(shared_emails)} participants")
+                        continue  # Skip single file processing for chunked exports
+                
+                # Single file export (non-chunked)
                 processed_history = preprocess_history(history, slack_client, people_cache)
                 
                 # Check for empty history after processing
@@ -458,6 +781,11 @@ Total Messages: {len(history)}
 
 """
                 processed_history = metadata_header + processed_history
+                
+                # Estimate file size before writing
+                estimated_size = estimate_file_size(processed_history)
+                if effective_max_file_size and estimated_size > effective_max_file_size:
+                    logger.warning(f"Estimated file size ({estimated_size / 1024 / 1024:.2f} MB) exceeds maximum ({effective_max_file_size / 1024 / 1024:.2f} MB). File will still be created.")
                 
                 # Sanitize filename to prevent path traversal
                 # Add date/time to filename for weekly runs (prevents overwriting)
@@ -492,10 +820,8 @@ Total Messages: {len(history)}
                         stats['failed'] += 1
                         continue
                     
-                    if file_size > MAX_FILE_SIZE_BYTES:
-                        logger.error(f"File size ({file_size / 1024 / 1024:.2f} MB) exceeds maximum ({MAX_FILE_SIZE_MB} MB) for {output_filepath}")
-                        stats['failed'] += 1
-                        continue
+                    if effective_max_file_size and file_size > effective_max_file_size:
+                        logger.warning(f"File size ({file_size / 1024 / 1024:.2f} MB) exceeds maximum ({effective_max_file_size / 1024 / 1024:.2f} MB) for {output_filepath}. File created but may cause issues.")
                     
                     stats['processed'] += 1
                     stats['total_messages'] += len(history)
@@ -665,6 +991,7 @@ if __name__ == "__main__":
     parser.add_argument("--upload-to-drive", action="store_true", help="Upload exported files to Google Drive.")
     parser.add_argument("--start-date", help="Start date for history export (YYYY-MM-DD).")
     parser.add_argument("--end-date", help="End date for history export (YYYY-MM-DD).")
+    parser.add_argument("--bulk-export", action="store_true", help="Enable bulk export mode: overrides limits and automatically chunks large exports into monthly files.")
     
     args = parser.parse_args()
 

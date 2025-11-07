@@ -185,6 +185,36 @@ You can also specify a date range for the export:
 python src/main.py --export-history --upload-to-drive --start-date "2024-01-01" --end-date "2024-12-31"
 ```
 
+### Bulk Export for Large Time Periods
+
+For exporting very large time periods (e.g., 2+ years), use the `--bulk-export` flag. This mode:
+
+- **Overrides all limits** (date range, message count, file size)
+- **Automatically chunks exports** into monthly files when:
+  - Date range exceeds 30 days, OR
+  - Message count exceeds 10,000 messages
+- **Creates monthly files** named like: `channel_name_history_2023-01_2025-11-06_14-30-45.txt`
+- **Makes it easier for AI tools** (like Gemini) to query specific time periods
+
+**Example: Export 2 years of messages**
+
+```bash
+python src/main.py --export-history --upload-to-drive --bulk-export --start-date "2023-01-01" --end-date "2024-12-31"
+```
+
+This will automatically split the export into monthly files (e.g., `channel_history_2023-01_...txt`, `channel_history_2023-02_...txt`, etc.), making it much more efficient for tools like Gemini to consume specific time periods.
+
+**When to use bulk export:**
+- Exporting 2+ years of history
+- Exporting channels with >10,000 messages
+- When you need monthly chunks for easier querying
+- When you want to override default safety limits
+
+**When NOT to use bulk export:**
+- Regular weekly/monthly incremental exports (use normal mode)
+- Small date ranges (<30 days)
+- Channels with <10,000 messages
+
 ### Example: Running Multiple Times
 
 **First Run:**
@@ -372,10 +402,12 @@ Set the required environment variables in GitLab CI/CD settings.
 
 - **Slack API Rate Limits:** The script respects Slack API rate limits with automatic retries, but very large workspaces may take time to process
 - **Google Drive API Quotas:** Google Drive has quotas (default: 1,000 requests per 100 seconds per user). The script includes rate limiting to stay within quotas
-- **Large Conversations:** Very large conversations (>50,000 messages) are limited by `MAX_MESSAGES_PER_CONVERSATION`
-- **Date Range:** Maximum date range is limited to 365 days by default (configurable via `MAX_DATE_RANGE_DAYS`)
-- **File Size:** Individual export files are limited to 100MB by default (configurable via `MAX_EXPORT_FILE_SIZE_MB`)
+- **Large Conversations:** Very large conversations (>50,000 messages) are limited by `MAX_MESSAGES_PER_CONVERSATION` (use `--bulk-export` to override)
+- **Date Range:** Maximum date range is limited to 365 days by default (configurable via `MAX_DATE_RANGE_DAYS`, or use `--bulk-export` to override)
+- **File Size:** Individual export files are limited to 100MB by default (configurable via `MAX_EXPORT_FILE_SIZE_MB`, or use `--bulk-export` to override)
 - **Bot Permissions:** The bot must be a member of channels/groups to export them. Private channels require the bot to be invited.
+
+**Note:** All limits can be overridden using the `--bulk-export` flag, which also enables automatic monthly chunking for large exports.
 
 ## Performance Notes
 
@@ -421,6 +453,30 @@ A: Folder access is automatically synchronized with channel membership on each e
 
 **Q: Can I export archived channels?**
 A: The script skips archived channels by default. To export them, you would need to modify the code.
+
+**Q: How do I export 2+ years of messages?**
+A: Use the `--bulk-export` flag along with your date range. The script will automatically split the export into monthly files:
+```bash
+python src/main.py --export-history --upload-to-drive --bulk-export --start-date "2023-01-01" --end-date "2024-12-31"
+```
+
+**Q: What does bulk export do?**
+A: Bulk export mode:
+- Overrides all safety limits (date range, message count, file size)
+- Automatically chunks large exports into monthly files
+- Creates files named with month/year (e.g., `channel_history_2023-01_...txt`)
+- Makes it easier for AI tools to query specific time periods
+
+**Q: When should I use bulk export vs regular export?**
+A: Use bulk export for:
+- Exporting 2+ years of history
+- Very large channels (>10,000 messages)
+- When you need monthly chunks for easier querying
+
+Use regular export for:
+- Weekly/monthly incremental updates
+- Small date ranges (<30 days)
+- Normal-sized channels
 
 ## Contributing
 
