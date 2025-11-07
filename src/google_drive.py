@@ -194,6 +194,105 @@ class GoogleDriveClient:
         
         self._last_api_call_time = time.time()
 
+    @staticmethod
+    def setup_authentication(credentials_file: str) -> str:
+        """Set up Google Drive authentication and create token file for CI/CD.
+        
+        This method performs the OAuth flow to authorize access and saves the token file.
+        It's designed to be run once locally to create a token file that can be used in CI/CD.
+        
+        Args:
+            credentials_file: Path to Google Drive API credentials JSON file
+            
+        Returns:
+            Path to the created token file
+            
+        Raises:
+            Exception: If authentication fails
+        """
+        creds = None
+        
+        # Securely determine token path
+        default_token_dir = os.path.join(os.path.expanduser("~"), ".config", "slackfeeder")
+        token_path = os.getenv('GOOGLE_DRIVE_TOKEN_FILE', os.path.join(default_token_dir, 'token.json'))
+        
+        scopes = ['https://www.googleapis.com/auth/drive']
+
+        if os.path.exists(token_path):
+            # Check for insecure file permissions and enforce security
+            try:
+                file_mode = os.stat(token_path).st_mode
+                if file_mode & 0o077:  # Check if group or others have permissions
+                    logger.error(f"Token file {token_path} has insecure permissions. Aborting authentication.")
+                    raise PermissionError(f"Token file permissions are insecure (current mode: {oct(file_mode & 0o777)}). Required: {oct(SECURE_FILE_PERMISSIONS)}")
+            except OSError as e:
+                logger.error(f"Could not check permissions for token file {token_path}: {e}")
+                raise
+
+            try:
+                creds = Credentials.from_authorized_user_file(token_path, scopes)
+            except Exception as e:
+                logger.warning(f"Error loading token file {token_path}: {e}")
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                except Exception as e:
+                    logger.warning(f"Error refreshing token: {e}")
+                    creds = None
+            
+            if not creds or not creds.valid:
+                logger.info("Starting OAuth flow. A browser window will open for authorization...")
+                flow = InstalledAppFlow.from_client_secrets_file(credentials_file, scopes)
+                creds = flow.run_local_server(port=0)
+                logger.info("Authorization successful!")
+            
+            # Save token using the same safe method
+            GoogleDriveClient._save_token_safely_static(token_path, creds)
+            logger.info(f"Token file created successfully at: {token_path}")
+            logger.info(f"Token file permissions: {oct(SECURE_FILE_PERMISSIONS)} (owner read/write only)")
+        
+        return token_path
+
+    @staticmethod
+    def _save_token_safely_static(token_path: str, creds: Credentials) -> None:
+        """Static version of _save_token_safely for use without instance."""
+        temp_path = token_path + '.tmp'
+        
+        try:
+            token_dir = os.path.dirname(token_path) if os.path.dirname(token_path) else '.'
+            if not os.path.exists(token_dir):
+                try:
+                    os.makedirs(token_dir, exist_ok=True)
+                except OSError as e:
+                    logger.error(f"Failed to create token directory {token_dir}: {e}")
+                    raise
+            
+            with open(temp_path, 'w') as token_file:
+                token_file.write(creds.to_json())
+            
+            try:
+                os.chmod(temp_path, SECURE_FILE_PERMISSIONS)
+                logger.debug(f"Set secure permissions for token file: {temp_path}")
+            except OSError as e:
+                logger.warning(f"Could not set permissions on temp token file {temp_path}: {e}")
+            
+            shutil.move(temp_path, token_path)
+            
+            try:
+                current_mode = os.stat(token_path).st_mode & 0o777
+                if current_mode != SECURE_FILE_PERMISSIONS:
+                    os.chmod(token_path, SECURE_FILE_PERMISSIONS)
+                    logger.debug(f"Corrected permissions for token file: {token_path}")
+            except OSError as e:
+                logger.warning(f"Could not verify permissions on token file {token_path}: {e}")
+            
+            logger.debug(f"Token saved successfully to {token_path}")
+        except Exception as e:
+            logger.error(f"Failed to save token: {e}")
+            raise
+
     def _authenticate(self, credentials_file):
         """Authenticates with Google Drive API."""
         creds = None

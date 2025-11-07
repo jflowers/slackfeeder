@@ -73,6 +73,11 @@ For CI/CD pipelines or when you prefer to set environment variables directly:
   - If not set, files will be uploaded to Drive root
   - To find a folder ID, open it in Google Drive and copy the ID from the URL
 
+- **`GOOGLE_DRIVE_TOKEN_FILE`**: (Optional) Path to store OAuth token file
+  - Defaults to `~/.config/slackfeeder/token.json` on local machines
+  - **For CI/CD:** You'll need to create this token file locally first (see "Running in CI/CD" section)
+  - The token file contains OAuth credentials and must have permissions 600 (owner read/write only)
+
 ```bash
 export SLACK_BOT_TOKEN="xoxb-your-token-here"
 export GOOGLE_DRIVE_CREDENTIALS_FILE="./path/to/credentials.json"
@@ -82,12 +87,28 @@ export GOOGLE_DRIVE_FOLDER_ID="your-folder-id"
 **For GitLab CI/CD:**
 Set these as CI/CD variables in your GitLab project settings under Settings ? CI/CD ? Variables.
 
+**Important for CI/CD:** Before running in CI/CD, you must set up Google Drive authentication locally to create a token file. See the "Running in CI/CD" section below for detailed instructions.
+
 **For other CI/CD systems:**
 Set these as environment variables in your build/deployment configuration.
 
 **Note:** If you use a `.env` file for local development, it will be automatically loaded. Environment variables set directly in your shell will override values in `.env`.
 
 ## Usage
+
+### 0. Set Up Google Drive Authentication (First Time Only)
+
+If you plan to use `--upload-to-drive`, you need to authorize Google Drive access first:
+
+```bash
+# Set your credentials file path
+export GOOGLE_DRIVE_CREDENTIALS_FILE="./path/to/credentials.json"
+
+# Run the setup command (this will open a browser for authorization)
+python src/main.py --setup-drive-auth
+```
+
+This creates a token file that allows the script to access Google Drive without requiring interactive authorization on subsequent runs. **For CI/CD setup, see the "Running in CI/CD" section below.**
 
 ### 1. Generate Reference Files
 
@@ -334,19 +355,89 @@ This means you can share the folder with participants, and they'll see all the w
 
 ## Running in CI/CD
 
-This project is designed to run in CI/CD pipelines. Example GitLab CI configuration:
+This project is designed to run in CI/CD pipelines. However, Google Drive OAuth requires an initial authorization step that must be done locally before the token can be used in CI/CD.
+
+### Setting Up Google Drive Authentication for CI/CD
+
+**Step 1: Create the token file locally**
+
+Before running in CI/CD, you must authorize Google Drive access on your local machine to create a token file:
+
+```bash
+# Set your credentials file path
+export GOOGLE_DRIVE_CREDENTIALS_FILE="./path/to/credentials.json"
+
+# Run the setup command (this will open a browser for authorization)
+python src/main.py --setup-drive-auth
+```
+
+This will:
+- Open a browser window for Google OAuth authorization
+- Create a token file at `~/.config/slackfeeder/token.json` (or path specified by `GOOGLE_DRIVE_TOKEN_FILE`)
+- Set secure file permissions (600) on the token file
+
+**Step 2: Add token file to GitLab CI/CD**
+
+1. Copy the contents of the token file created in Step 1:
+   ```bash
+   cat ~/.config/slackfeeder/token.json
+   ```
+
+2. In GitLab, go to your project ? Settings ? CI/CD ? Variables
+
+3. Add a new variable:
+   - **Key:** `GOOGLE_DRIVE_TOKEN_FILE` (or any name you prefer)
+   - **Value:** Paste the entire contents of the token file
+   - **Type:** Select "File" (this creates a temporary file in CI/CD)
+   - **Protected:** Note: File type variables cannot be protected variables in GitLab. To secure the token, use repository-level protection instead (see Security Notes below)
+   - **Masked:** Optional (recommended for security)
+
+**Important Security Note:** GitLab file type variables cannot be marked as "Protected" variables. To secure your token file, use repository-level settings:
+   - Go to Settings ? CI/CD ? Variables
+   - Set "Minimum role to use pipeline variables" to "Owner" (or appropriate role)
+   - This restricts who can access CI/CD variables, including your token file
+   - Consider also enabling "Protect variable" for other sensitive variables (like `SLACK_BOT_TOKEN`)
+
+**Step 3: Configure GitLab CI/CD**
+
+Example GitLab CI configuration:
 
 ```yaml
 slack-export:
   image: python:3.11
   script:
     - pip install -r requirements.txt
+    # Set secure permissions on token file (required)
+    - chmod 600 "${GOOGLE_DRIVE_TOKEN_FILE}"
+    # Set the token file path environment variable
+    - export GOOGLE_DRIVE_TOKEN_FILE="${GOOGLE_DRIVE_TOKEN_FILE}"
     - python src/main.py --export-history --upload-to-drive
   only:
     - schedules  # Run on schedule
 ```
 
-Set the required environment variables in GitLab CI/CD settings.
+**Important:** The `chmod 600` command is required because the script enforces secure file permissions on the token file. GitLab CI/CD file variables are created with default permissions that don't meet the security requirements.
+
+**Step 4: Set other required environment variables**
+
+In GitLab CI/CD settings, also set:
+- `SLACK_BOT_TOKEN` - Your Slack bot token
+- `GOOGLE_DRIVE_CREDENTIALS_FILE` - Path to credentials JSON file (can be another file variable)
+- `GOOGLE_DRIVE_FOLDER_ID` - (Optional) Target folder ID
+
+**For other CI/CD systems:**
+
+The same workflow applies:
+1. Run `--setup-drive-auth` locally to create the token file
+2. Add the token file contents as a secure variable/file in your CI/CD system
+3. Set `GOOGLE_DRIVE_TOKEN_FILE` to point to that file
+4. Ensure the token file has permissions 600 before running the script
+
+**Security Notes:**
+- The token file contains OAuth credentials - treat it as a secret
+- Never commit the token file to version control
+- The token file must have permissions 600 (owner read/write only)
+- Tokens can be refreshed automatically, but if revoked, you'll need to run `--setup-drive-auth` again
 
 ## Environment Variables Reference
 

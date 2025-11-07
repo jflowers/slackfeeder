@@ -1016,13 +1016,51 @@ if __name__ == "__main__":
     parser.add_argument("--make-ref-files", action="store_true", help="Generate reference files (channels.json, people.json).")
     parser.add_argument("--export-history", action="store_true", help="Export conversation history.")
     parser.add_argument("--upload-to-drive", action="store_true", help="Upload exported files to Google Drive.")
+    parser.add_argument("--setup-drive-auth", action="store_true", help="Set up Google Drive authentication and create token file for CI/CD. Run this once locally before using in CI/CD.")
     parser.add_argument("--start-date", help="Start date for history export (YYYY-MM-DD).")
     parser.add_argument("--end-date", help="End date for history export (YYYY-MM-DD).")
     parser.add_argument("--bulk-export", action="store_true", help="Enable bulk export mode: overrides limits and automatically chunks large exports into monthly files.")
     
     args = parser.parse_args()
 
-    if not any([args.make_ref_files, args.export_history, args.upload_to_drive]):
+    if args.setup_drive_auth:
+        # Handle setup-drive-auth separately - doesn't require other args
+        google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+        if not google_drive_credentials_file:
+            logger.error("GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --setup-drive-auth. Exiting.")
+            sys.exit(1)
+        
+        try:
+            google_drive_credentials_file = os.path.abspath(os.path.expanduser(google_drive_credentials_file))
+            if not os.path.exists(google_drive_credentials_file):
+                logger.error(f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}")
+                sys.exit(1)
+            if not os.path.isfile(google_drive_credentials_file):
+                logger.error(f"Credentials path is not a file: {sanitize_path_for_logging(google_drive_credentials_file)}")
+                sys.exit(1)
+            if not os.access(google_drive_credentials_file, os.R_OK):
+                logger.error(f"Credentials file is not readable: {sanitize_path_for_logging(google_drive_credentials_file)}")
+                sys.exit(1)
+        except (OSError, ValueError) as e:
+            logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
+            sys.exit(1)
+        
+        try:
+            token_path = GoogleDriveClient.setup_authentication(google_drive_credentials_file)
+            logger.info("="*80)
+            logger.info("Google Drive authentication setup complete!")
+            logger.info(f"Token file created at: {token_path}")
+            logger.info("")
+            logger.info("Next steps for CI/CD:")
+            logger.info("1. Copy the contents of the token file")
+            logger.info("2. Add it as a CI/CD variable (file type) in your GitLab project")
+            logger.info("3. Set GOOGLE_DRIVE_TOKEN_FILE in your CI/CD to point to that variable")
+            logger.info("4. Add 'chmod 600 \"${GOOGLE_DRIVE_TOKEN_FILE}\"' to your CI/CD script")
+            logger.info("="*80)
+        except Exception as e:
+            logger.error(f"Failed to set up authentication: {e}", exc_info=True)
+            sys.exit(1)
+    elif not any([args.make_ref_files, args.export_history, args.upload_to_drive]):
         parser.print_help()
     else:
         main(args)
