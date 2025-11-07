@@ -273,9 +273,11 @@ class TestShareFolder:
             with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
                 with patch('src.google_drive.build', return_value=Mock()):
                     client = GoogleDriveClient("fake_credentials.json")
-            # Use a valid folder ID format
-            result = client.share_folder("0B1234567890abcdef", "user@example.com")
-            assert result is True
+                    # Mock get_folder_permissions to return empty list (user doesn't have access yet)
+                    with patch.object(client, 'get_folder_permissions', return_value=[]):
+                        # Use a valid folder ID format
+                        result = client.share_folder("0B1234567890abcdef", "user@example.com")
+                        assert result is True
     
     @patch('src.google_drive.build')
     def test_share_already_shared(self, mock_build):
@@ -290,9 +292,16 @@ class TestShareFolder:
             with patch('src.google_drive.GoogleDriveClient._authenticate', return_value=Mock()):
                 with patch('src.google_drive.build', return_value=Mock()):
                     client = GoogleDriveClient("fake_credentials.json")
-            # Use a valid folder ID format
-            result = client.share_folder("0B1234567890abcdef", "user@example.com")
-            assert result is True  # Already shared is considered success
+                    # Mock get_folder_permissions to return permission showing user already has access
+                    existing_permission = {
+                        'type': 'user',
+                        'emailAddress': 'user@example.com',
+                        'role': 'reader'
+                    }
+                    with patch.object(client, 'get_folder_permissions', return_value=[existing_permission]):
+                        # Use a valid folder ID format
+                        result = client.share_folder("0B1234567890abcdef", "user@example.com")
+                        assert result is True  # Already shared is considered success
     
     @patch('src.google_drive.build')
     def test_share_with_invalid_email(self, mock_build):
