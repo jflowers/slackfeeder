@@ -421,20 +421,65 @@ class GoogleDriveClient:
         return files
     
     def get_latest_export_timestamp(self, folder_id: str, file_prefix: str) -> Optional[str]:
-        """Gets the timestamp from the most recent export file in a folder.
+        """Gets the timestamp from the most recent export metadata file.
         
-        Parses timestamps from filenames like: {prefix}_history_2024-01-15_14-30-45.txt
+        First tries to read from the metadata JSON file ({prefix}_last_export.json),
+        which contains the actual latest message timestamp. Falls back to parsing
+        filenames if metadata file doesn't exist (for backward compatibility).
         
         Args:
             folder_id: Google Drive folder ID
             file_prefix: Prefix to match export files (sanitized channel name)
             
         Returns:
-            Unix timestamp string from the most recent file, or None if no files found
+            Unix timestamp string from the most recent export, or None if no files found
         """
+        import json
         import re
         from datetime import datetime, timezone
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
         
+        # First, try to read from the metadata JSON file
+        metadata_filename = f"{file_prefix}_last_export.json"
+        escaped_metadata_name = self._escape_drive_query_string(metadata_filename)
+        query = f"name='{escaped_metadata_name}' and '{folder_id}' in parents and trashed=false"
+        
+        try:
+            self._rate_limit()
+            results = self.service.files().list(
+                q=query,
+                fields='files(id, name)',
+                pageSize=1
+            ).execute()
+            metadata_files = results.get('files', [])
+            
+            if metadata_files:
+                # Found metadata file, read it
+                metadata_file_id = metadata_files[0]['id']
+                request = self.service.files().get_media(fileId=metadata_file_id)
+                file_content = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_content, request)
+                
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                
+                file_content.seek(0)
+                metadata_json = json.loads(file_content.read().decode('utf-8'))
+                latest_message_timestamp = metadata_json.get('latest_message_timestamp')
+                
+                if latest_message_timestamp:
+                    logger.debug(f"Found latest export timestamp from metadata file: {latest_message_timestamp}")
+                    return str(latest_message_timestamp)
+        except HttpError as error:
+            logger.debug(f"Could not read metadata file (may not exist yet): {error}")
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.debug(f"Could not parse metadata file: {e}")
+        except Exception as e:
+            logger.debug(f"Error reading metadata file: {e}")
+        
+        # Fallback: parse timestamps from filenames (for backward compatibility)
         files = self.list_files_in_folder(folder_id, name_pattern=f"{file_prefix}_history_")
         
         if not files:
@@ -465,9 +510,7 @@ class GoogleDriveClient:
                     # Keep track of the most recent
                     if latest_file_time is None or file_timestamp > latest_file_time:
                         latest_file_time = file_timestamp
-                        # Get the actual message timestamp from the file's metadata if available
-                        # For now, use the file timestamp - we'll use the latest message timestamp from the file content
-                        # But that would require downloading the file, so we'll use modifiedTime as fallback
+                        # Use file modifiedTime as fallback
                         modified_time = file.get('modifiedTime')
                         if modified_time:
                             try:
@@ -493,6 +536,9 @@ class GoogleDriveClient:
                     latest_timestamp = str(mod_dt.timestamp())
             except Exception as e:
                 logger.debug(f"Could not parse modifiedTime from file: {e}")
+        
+        if latest_timestamp:
+            logger.debug(f"Using fallback timestamp from filename parsing: {latest_timestamp}")
         
         return latest_timestamp
     
