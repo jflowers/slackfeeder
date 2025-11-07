@@ -1,0 +1,25 @@
+[MASTER]
+# Use multiple processes to speed up Pylint
+jobs=0
+
+[FORMAT]
+max-line-length=100
+
+[MESSAGES CONTROL]
+# Disable specific warnings
+disable=
+    missing-docstring,
+    invalid-name,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-branches,
+    too-many-locals,
+    too-many-statements,
+    no-member  # Google API client uses dynamic attributes
+
+[DESIGN]
+max-args=10
+max-attributes=15
+max-branches=15
+max-locals=20
+max-statements=60

@@ -1,10 +1,12 @@
 """
 Pytest configuration and shared fixtures.
 """
-import pytest
+
 import os
-import tempfile
 import shutil
+import tempfile
+
+import pytest
 
 
 @pytest.fixture
@@ -18,7 +20,7 @@ def temp_dir():
 @pytest.fixture
 def temp_file():
     """Create a temporary file."""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
         temp_path = f.name
     yield temp_path
     if os.path.exists(temp_path):
@@ -32,7 +34,7 @@ def sample_channels_json():
         "channels": [
             {"id": "C01234567", "displayName": "general", "export": True},
             {"id": "C01234568", "displayName": "random", "export": False},
-            {"id": "D01234567", "export": True}
+            {"id": "D01234567", "export": True},
         ]
     }
 
@@ -42,15 +44,7 @@ def sample_people_json():
     """Sample people.json data for testing."""
     return {
         "people": [
-            {
-                "slackId": "U01234567",
-                "email": "user1@example.com",
-                "displayName": "User One"
-            },
-            {
-                "slackId": "U01234568",
-                "email": "user2@example.com",
-                "displayName": "User Two"
-            }
+            {"slackId": "U01234567", "email": "user1@example.com", "displayName": "User One"},
+            {"slackId": "U01234568", "email": "user2@example.com", "displayName": "User Two"},
         ]
     }

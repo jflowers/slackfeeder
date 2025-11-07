@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Enable version updates for Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "python"
+    # Group updates to reduce PR noise
+    groups:
+      development-dependencies:
+        patterns:
+          - "black"
+          - "isort"
+          - "pylint"
+          - "pytest"
+      google-dependencies:
+        patterns:
+          - "google-*"
+      slack-dependencies:
+        patterns:
+          - "slack-*"

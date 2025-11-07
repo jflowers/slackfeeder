@@ -24,9 +24,23 @@ cd slackfeeder
 
 **Python Requirements:** Python 3.9 or higher is required.
 
+**Option 1: Using pip with pyproject.toml (Recommended)**
+
+```bash
+# Install runtime dependencies
+pip install .
+
+# Or install with development dependencies (includes black, pylint, pytest)
+pip install -e ".[dev]"
+```
+
+**Option 2: Using requirements.txt (Legacy support)**
+
 ```bash
 pip install -r requirements.txt
 ```
+
+**Note:** This project uses `pyproject.toml` (PEP 621) for modern dependency management. The `requirements.txt` file is maintained for backward compatibility. GitHub Dependabot supports `pyproject.toml` for automated dependency updates.
 
 ### 3. Configure the application
 
@@ -406,7 +420,8 @@ Example GitLab CI configuration:
 slack-export:
   image: python:3.11
   script:
-    - pip install -r requirements.txt
+    # Install dependencies from pyproject.toml
+    - pip install .
     # Set secure permissions on token file (required)
     - chmod 600 "${GOOGLE_DRIVE_TOKEN_FILE}"
     # Set the token file path environment variable
@@ -415,6 +430,8 @@ slack-export:
   only:
     - schedules  # Run on schedule
 ```
+
+**Note:** You can also use `pip install -r requirements.txt` if you prefer the legacy approach.
 
 **Important:** The `chmod 600` command is required because the script enforces secure file permissions on the token file. GitLab CI/CD file variables are created with default permissions that don't meet the security requirements.
 
@@ -569,6 +586,58 @@ Use regular export for:
 - Small date ranges (<30 days)
 - Normal-sized channels
 
+## Development
+
+### Code Formatting and Linting
+
+This project uses modern Python tooling for code quality:
+
+- **Black**: Code formatter (line length: 100)
+- **isort**: Import sorting (compatible with Black)
+- **pylint**: Code linting
+
+**Format code:**
+```bash
+black src/ tests/
+isort src/ tests/
+```
+
+**Lint code:**
+```bash
+pylint src/ tests/
+```
+
+**Run all checks:**
+```bash
+black --check src/ tests/
+isort --check src/ tests/
+pylint src/ tests/
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=src --cov-report=html
+```
+
+### Dependencies
+
+Dependencies are managed in `pyproject.toml` (PEP 621 format), which is supported by:
+- GitHub Dependabot (automated dependency updates)
+- Modern pip (>=21.0)
+- Poetry, pipenv, and other modern tools
+
+The `requirements.txt` file is maintained for backward compatibility but `pyproject.toml` is the source of truth.
+
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
+
+Before submitting:
+1. Format code with `black` and `isort`
+2. Run `pylint` and fix any issues
+3. Ensure all tests pass with `pytest`
