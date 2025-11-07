@@ -35,7 +35,9 @@ class SlackClient:
             raise ValueError("Slack Bot Token is missing or not replaced. Please set the SLACK_BOT_TOKEN.")
         # Validate token format
         if not token.startswith("xoxb-") and not token.startswith("xoxp-"):
-            raise ValueError(f"Invalid Slack token format. Expected token starting with 'xoxb-' or 'xoxp-', got: {token[:10]}...")
+            # Don't expose actual token characters in error message
+            token_prefix = "xoxb-" if token.startswith("xoxb") else ("xoxp-" if token.startswith("xoxp") else "unknown")
+            raise ValueError(f"Invalid Slack token format. Expected token starting with 'xoxb-' or 'xoxp-', got: {token_prefix}...")
         self.client = WebClient(token=token, timeout=API_TIMEOUT_SECONDS)
         # Use LRU cache to prevent unbounded memory growth
         self.user_cache: LRUCache[str, Optional[Dict[str, str]]] = LRUCache(maxsize=MAX_USER_CACHE_SIZE)
@@ -304,19 +306,20 @@ class SlackClient:
                         logger.error(f"An unexpected error occurred during API call for channel {channel_id}: {e}", exc_info=True)
                         return None
 
+                # Parse response - handle potential KeyError/AttributeError from response structure
+                try:
+                    messages = response.get("messages", [])
+                    all_messages.extend(messages)
+                    logger.info(f"Fetched {len(messages)} messages on page {page_count} for channel {channel_id}. Total fetched: {len(all_messages)}")
+
+                    response_metadata = response.get("response_metadata")
+                    if response_metadata:
+                        next_cursor = response_metadata.get("next_cursor")
+                    else:
+                        next_cursor = None
                 except (KeyError, AttributeError) as e:
                     logger.error(f"Unexpected response format for channel {channel_id}: {e}")
                     return None
-
-                messages = response.get("messages", [])
-                all_messages.extend(messages)
-                logger.info(f"Fetched {len(messages)} messages on page {page_count} for channel {channel_id}. Total fetched: {len(all_messages)}")
-
-                response_metadata = response.get("response_metadata")
-                if response_metadata:
-                    next_cursor = response_metadata.get("next_cursor")
-                else:
-                    next_cursor = None
 
                 if not next_cursor:
                     logger.info(f"Reached the end of the message history for channel {channel_id}.")

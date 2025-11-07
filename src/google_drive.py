@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 SECURE_FILE_PERMISSIONS = 0o600
-GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH = 255
+GOOGLE_DRIVE_MAX_FOLDER_NAME_LENGTH = 255  # Maximum folder name length in Google Drive
 GOOGLE_DRIVE_FOLDER_ID_MIN_LENGTH = 10
 GOOGLE_DRIVE_FOLDER_ID_MAX_LENGTH = 50
 API_TIMEOUT_SECONDS = 30
@@ -342,6 +342,7 @@ class GoogleDriveClient:
         
         # Check if file already exists
         if overwrite:
+            self._rate_limit()  # Rate limit before API call
             escaped_file_name = self._escape_drive_query_string(file_name)
             # Escape folder_id in query
             escaped_folder_id = self._escape_drive_query_string(folder_id)

@@ -191,8 +191,15 @@ def convert_date_to_timestamp(date_str: Optional[str], is_end_date: bool = False
     # Assume the provided time is in UTC and get the timestamp
     return str(dt.replace(tzinfo=timezone.utc).timestamp())
 
-def create_directory(dir_path):
-    """Creates a directory if it doesn't exist."""
+def create_directory(dir_path: str) -> bool:
+    """Creates a directory if it doesn't exist.
+    
+    Args:
+        dir_path: Path to directory to create
+        
+    Returns:
+        True if directory exists or was created successfully, False otherwise
+    """
     if not os.path.exists(dir_path):
         try:
             os.makedirs(dir_path)
@@ -202,7 +209,10 @@ def create_directory(dir_path):
             return False
     return True
 
-def sanitize_filename(filename):
+# Constants
+MAX_FILENAME_LENGTH = 200  # Maximum filename length
+
+def sanitize_filename(filename: str) -> str:
     """Remove path separators and dangerous characters from filename.
     
     Args:
@@ -222,21 +232,21 @@ def sanitize_filename(filename):
     # Remove leading/trailing dots and spaces
     filename = filename.strip('. ')
     # Limit length
-    filename = filename[:200]
+    filename = filename[:MAX_FILENAME_LENGTH]
     # Ensure we have a valid filename
     if not filename:
         filename = "unnamed"
     
     return filename
 
-def format_timestamp(timestamp_str):
+def format_timestamp(timestamp_str: Optional[str]) -> Optional[str]:
     """Converts a Unix timestamp string to a readable datetime string.
     
     Args:
         timestamp_str: Unix timestamp as string
         
     Returns:
-        Formatted datetime string, or original string if conversion fails
+        Formatted datetime string, or original string if conversion fails, or None if input is None
     """
     if timestamp_str is None:
         return None
@@ -246,6 +256,20 @@ def format_timestamp(timestamp_str):
         return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
     except (ValueError, TypeError):
         return timestamp_str
+
+def sanitize_path_for_logging(filepath: str) -> str:
+    """Sanitize file paths for logging to avoid exposing sensitive directory structures.
+    
+    Args:
+        filepath: Full file path to sanitize
+        
+    Returns:
+        Sanitized path showing only filename or last component
+    """
+    if not filepath:
+        return "[empty path]"
+    # Return only the filename, not the full path
+    return os.path.basename(filepath)
 
 def validate_email(email: str) -> bool:
     """Validate email format.
