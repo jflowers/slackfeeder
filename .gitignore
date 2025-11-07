@@ -17,6 +17,9 @@ htmlcov/
 *.cover
 .hypothesis/
 
+# Generated files (keep requirements.txt in repo but ignore lock files)
+requirements*.txt.lock
+
 # IDEs
 .vscode/
 .idea/

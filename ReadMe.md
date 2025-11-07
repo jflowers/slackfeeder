@@ -40,7 +40,24 @@ pip install -e ".[dev]"
 pip install -r requirements.txt
 ```
 
-**Note:** This project uses `pyproject.toml` (PEP 621) for modern dependency management. The `requirements.txt` file is maintained for backward compatibility. GitHub Dependabot supports `pyproject.toml` for automated dependency updates.
+**Note:** This project uses `pyproject.toml` (PEP 621) as the **source of truth** for dependencies. The `requirements.txt` file is auto-generated from `pyproject.toml` for backward compatibility. GitHub Dependabot supports `pyproject.toml` for automated dependency updates.
+
+**To update requirements.txt after changing pyproject.toml:**
+
+You have two options:
+
+1. **Use the helper script** (recommended):
+   ```bash
+   ./scripts/update_requirements.sh
+   ```
+
+2. **Manual sync**: After installing from `pyproject.toml`, export dependencies:
+   ```bash
+   pip install .
+   pip freeze | grep -E "(cachetools|google|slack|requests|python-dotenv)" > requirements.txt
+   ```
+
+**Important:** Always edit dependencies in `pyproject.toml` first, then regenerate `requirements.txt`. The `pyproject.toml` file is the single source of truth.
 
 ### 3. Configure the application
 
@@ -631,7 +648,14 @@ Dependencies are managed in `pyproject.toml` (PEP 621 format), which is supporte
 - Modern pip (>=21.0)
 - Poetry, pipenv, and other modern tools
 
-The `requirements.txt` file is maintained for backward compatibility but `pyproject.toml` is the source of truth.
+The `requirements.txt` file should be kept in sync with `pyproject.toml` for backward compatibility. **Always edit dependencies in `pyproject.toml` first**, then regenerate `requirements.txt` using the helper script:
+```bash
+./scripts/update_requirements.sh
+```
+
+Or use `make requirements` if you have Make installed.
+
+This ensures both files stay in sync. The `pyproject.toml` file is the single source of truth.
 
 ## Contributing
 
