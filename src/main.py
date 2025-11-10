@@ -971,8 +971,8 @@ def main(args):
                             )
                             continue
 
-                        # Create doc name: [channel name] slack messages yyyymmdd
-                        doc_name = f"[{channel_name}] slack messages {date_key}"
+                        # Create doc name: channel name slack messages yyyymmdd
+                        doc_name = f"{channel_name} slack messages {date_key}"
 
                         # Check if doc already exists to determine if we need a header
                         escaped_doc_name = google_drive_client._escape_drive_query_string(doc_name)

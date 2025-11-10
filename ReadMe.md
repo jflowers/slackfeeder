@@ -8,7 +8,7 @@ This project exports conversations from Slack, processes them into a human-reada
 - Processes Slack's JSON export into a clean, readable text format with human-readable timestamps
 - Creates Google Docs (instead of text files) optimized for AI tools like Gemini
 - Organizes conversations in Google Drive folders named with display names
-- Creates one Google Doc per day with format: `[channel name] slack messages yyyymmdd`
+- Creates one Google Doc per day with format: `channel name slack messages yyyymmdd`
 - Automatically shares folders with all conversation participants and keeps access synchronized with channel membership
 - Handles incremental updates by appending to existing daily docs (no duplicate headers)
 - Uses environment variables for secure configuration (perfect for CI/CD pipelines)
@@ -324,7 +324,7 @@ python src/main.py --export-history --upload-to-drive
    - Connects to the Google Drive API
    - For each exported conversation, creates a folder (or uses existing) named with the conversation's display name
    - Groups messages by date (YYYYMMDD format) and creates one Google Doc per day
-   - Creates Google Docs with format: `[channel name] slack messages yyyymmdd`
+   - Creates Google Docs with format: `channel name slack messages yyyymmdd`
    - For new docs: Adds full metadata header with channel info and date
    - For existing docs: Appends new messages with separator (no duplicate headers)
    - Automatically tracks the last export date for incremental updates:
@@ -379,7 +379,7 @@ The script is designed to run weekly and automatically performs incremental upda
 - **First run**: Fetches all available message history
 - **Subsequent runs**: Automatically fetches only new messages since the last export
 - **Daily Google Docs**: When uploading to Drive, messages are grouped by date and appended to existing daily docs
-  - Format: `[channel name] slack messages yyyymmdd`
+  - Format: `channel name slack messages yyyymmdd`
   - New messages are appended to the appropriate daily doc (no duplicate headers)
   - Each day gets its own Google Doc, making it easy for AI tools to query specific dates
 - **Local files**: When not using `--upload-to-drive`, files are saved locally with timestamps (e.g., `channel_name_history_2024-01-15_14-30-45.txt`)
