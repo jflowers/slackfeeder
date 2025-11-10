@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import sys
 import time
 from calendar import monthrange
@@ -67,6 +68,60 @@ CHUNK_DATE_RANGE_DAYS = 30  # Chunk if date range exceeds this
 CHUNK_MESSAGE_THRESHOLD = 10000  # Chunk if message count exceeds this
 
 
+def replace_user_ids_in_text(
+    text: str,
+    slack_client: SlackClient,
+    people_cache: Optional[Dict[str, str]] = None,
+) -> str:
+    """Replace user IDs in message text with user display names.
+
+    Handles Slack user mention formats:
+    - <@U1234567890> (standard mention format)
+    - @U1234567890 (mention without angle brackets)
+
+    Args:
+        text: Message text that may contain user IDs
+        slack_client: SlackClient instance for looking up user info
+        people_cache: Optional cache dictionary mapping user IDs to display names
+
+    Returns:
+        Text with user IDs replaced by display names
+    """
+    if not text:
+        return text
+
+    # Pattern to match Slack user mentions: <@U...> or @U...
+    # User IDs start with U and are followed by alphanumeric characters
+    pattern = r"<@(U[A-Z0-9]+)>|@(U[A-Z0-9]+)"
+
+    def replace_match(match: re.Match) -> str:
+        # Extract user ID from either capture group
+        user_id = match.group(1) or match.group(2)
+        if not user_id:
+            return match.group(0)  # Return original if no match
+
+        # Check cache first
+        if people_cache and user_id in people_cache:
+            display_name = people_cache[user_id]
+        else:
+            # Look up user info
+            user_info = slack_client.get_user_info(user_id)
+            if user_info:
+                display_name = user_info.get("displayName", user_id)
+                # Update cache for future use
+                if people_cache is not None:
+                    people_cache[user_id] = display_name
+            else:
+                # If user lookup fails, keep the original ID
+                display_name = user_id
+
+        # Replace with @DisplayName format to preserve mention context
+        return f"@{display_name}"
+
+    # Replace all matches
+    return re.sub(pattern, replace_match, text)
+
+
 def preprocess_history(
     history_data: List[Dict[str, Any]],
     slack_client: SlackClient,
@@ -88,6 +143,9 @@ def preprocess_history(
         # If text and files, append placeholder
         elif text and files:
             text += " [File attached]"
+
+        # Replace user IDs in message text with user names
+        text = replace_user_ids_in_text(text, slack_client, people_cache)
 
         thread_key = message.get("thread_ts", message.get("ts"))
         if not thread_key:

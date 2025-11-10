@@ -13,6 +13,7 @@ from src.main import (
     estimate_file_size,
     get_conversation_display_name,
     preprocess_history,
+    replace_user_ids_in_text,
     should_chunk_export,
     split_messages_by_month,
 )
@@ -114,6 +115,186 @@ class TestPreprocessHistory:
 
         # Empty result or no user mention
         assert "U123" not in result or result.strip() == ""
+
+    def test_preprocess_replaces_user_ids_in_message_text(self):
+        """Test that user IDs in message text are replaced with names."""
+        slack_client = Mock(spec=SlackClient)
+
+        def get_user_info_side_effect(user_id):
+            if user_id == "U123":
+                return {"slackId": "U123", "displayName": "Test User", "email": "test@example.com"}
+            elif user_id == "U456":
+                return {
+                    "slackId": "U456",
+                    "displayName": "Alice Smith",
+                    "email": "alice@example.com",
+                }
+            return None
+
+        slack_client.get_user_info.side_effect = get_user_info_side_effect
+
+        history = [
+            {
+                "ts": "1234567890.123",
+                "user": "U123",
+                "text": "Hey <@U456>, can you check this?",
+            }
+        ]
+
+        result = preprocess_history(history, slack_client)
+
+        assert "@Alice Smith" in result
+        assert "<@U456>" not in result
+        assert "U456" not in result
+
+    def test_preprocess_replaces_multiple_user_ids(self):
+        """Test that multiple user IDs in one message are replaced."""
+        slack_client = Mock(spec=SlackClient)
+
+        def get_user_info_side_effect(user_id):
+            if user_id == "U123":
+                return {"slackId": "U123", "displayName": "Test User", "email": "test@example.com"}
+            elif user_id == "U456":
+                return {"slackId": "U456", "displayName": "Alice", "email": "alice@example.com"}
+            elif user_id == "U789":
+                return {"slackId": "U789", "displayName": "Bob", "email": "bob@example.com"}
+            return None
+
+        slack_client.get_user_info.side_effect = get_user_info_side_effect
+
+        history = [
+            {
+                "ts": "1234567890.123",
+                "user": "U123",
+                "text": "Hey <@U456> and <@U789>, can you help?",
+            }
+        ]
+
+        result = preprocess_history(history, slack_client)
+
+        assert "@Alice" in result
+        assert "@Bob" in result
+        assert "<@U456>" not in result
+        assert "<@U789>" not in result
+
+
+class TestReplaceUserIdsInText:
+    """Tests for replace_user_ids_in_text function."""
+
+    def test_replace_user_id_with_angle_brackets(self):
+        """Test replacing <@U123> format."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_user_info.return_value = {
+            "slackId": "U123",
+            "displayName": "John Doe",
+            "email": "john@example.com",
+        }
+
+        text = "Hey <@U123>, how are you?"
+        result = replace_user_ids_in_text(text, slack_client)
+
+        assert "@John Doe" in result
+        assert "<@U123>" not in result
+
+    def test_replace_user_id_without_angle_brackets(self):
+        """Test replacing @U123 format."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_user_info.return_value = {
+            "slackId": "U123",
+            "displayName": "John Doe",
+            "email": "john@example.com",
+        }
+
+        text = "Hey @U123, how are you?"
+        result = replace_user_ids_in_text(text, slack_client)
+
+        assert "@John Doe" in result
+        assert "@U123" not in result
+
+    def test_replace_multiple_user_ids(self):
+        """Test replacing multiple user IDs in one message."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_user_info.side_effect = [
+            {"slackId": "U123", "displayName": "Alice", "email": "alice@example.com"},
+            {"slackId": "U456", "displayName": "Bob", "email": "bob@example.com"},
+        ]
+
+        text = "Hey <@U123> and <@U456>, can you help?"
+        result = replace_user_ids_in_text(text, slack_client)
+
+        assert "@Alice" in result
+        assert "@Bob" in result
+        assert "<@U123>" not in result
+        assert "<@U456>" not in result
+
+    def test_replace_with_cache(self):
+        """Test that cache is used when available."""
+        slack_client = Mock(spec=SlackClient)
+        people_cache = {"U123": "Cached Name"}
+
+        text = "Hey <@U123>, how are you?"
+        result = replace_user_ids_in_text(text, slack_client, people_cache)
+
+        assert "@Cached Name" in result
+        # Verify API was not called
+        slack_client.get_user_info.assert_not_called()
+
+    def test_replace_updates_cache(self):
+        """Test that cache is updated when looking up new users."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_user_info.return_value = {
+            "slackId": "U123",
+            "displayName": "John Doe",
+            "email": "john@example.com",
+        }
+        people_cache = {}
+
+        text = "Hey <@U123>, how are you?"
+        result = replace_user_ids_in_text(text, slack_client, people_cache)
+
+        assert "@John Doe" in result
+        assert people_cache.get("U123") == "John Doe"
+
+    def test_replace_handles_failed_lookup(self):
+        """Test that failed user lookups keep the original ID."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_user_info.return_value = None
+
+        text = "Hey <@U123>, how are you?"
+        result = replace_user_ids_in_text(text, slack_client)
+
+        # Should keep the original format or ID
+        assert "U123" in result
+
+    def test_replace_empty_text(self):
+        """Test that empty text returns empty string."""
+        slack_client = Mock(spec=SlackClient)
+        result = replace_user_ids_in_text("", slack_client)
+        assert result == ""
+
+    def test_replace_no_user_ids(self):
+        """Test that text without user IDs is unchanged."""
+        slack_client = Mock(spec=SlackClient)
+        text = "This is a normal message without any mentions."
+        result = replace_user_ids_in_text(text, slack_client)
+        assert result == text
+        slack_client.get_user_info.assert_not_called()
+
+    def test_replace_mixed_formats(self):
+        """Test replacing both <@U123> and @U456 formats in same message."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_user_info.side_effect = [
+            {"slackId": "U123", "displayName": "Alice", "email": "alice@example.com"},
+            {"slackId": "U456", "displayName": "Bob", "email": "bob@example.com"},
+        ]
+
+        text = "Hey <@U123> and @U456, can you help?"
+        result = replace_user_ids_in_text(text, slack_client)
+
+        assert "@Alice" in result
+        assert "@Bob" in result
+        assert "<@U123>" not in result
+        assert "@U456" not in result
 
 
 class TestGetConversationDisplayName:
