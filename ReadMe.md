@@ -250,7 +250,7 @@ For exporting very large time periods (e.g., 2+ years), use the `--bulk-export` 
   - Date range exceeds 30 days, OR
   - Message count exceeds 10,000 messages
 - **Monthly files** (local only) named like: `channel_name_history_2023-01_2025-11-06_14-30-45.txt`
-- **Daily Google Docs** (when uploading) named like: `[channel name] slack messages 20230115`
+- **Daily Google Docs** (when uploading) named like: `channel name slack messages 20230115`
 
 **Example: Export 2 years of messages**
 
@@ -348,8 +348,8 @@ Each conversation gets its own folder in Google Drive, named with the conversati
 - Group chats: Uses comma-separated participant names (e.g., `John Doe, Jane Smith`)
 
 **Daily Google Docs:** When uploading to Drive, messages are grouped by date and one Google Doc is created per day:
-- Format: `[channel name] slack messages yyyymmdd`
-- Example: `[team-orange] slack messages 20250115`
+- Format: `channel name slack messages yyyymmdd`
+- Example: `team-orange slack messages 20250115`
 - Each doc contains all messages from that specific day
 - New messages are appended to existing daily docs (no duplicate headers)
 - Optimized for AI tools like Gemini that work better with daily files
@@ -608,7 +608,7 @@ A: Use the `--bulk-export` flag along with your date range. When uploading to Dr
 python src/main.py --export-history --upload-to-drive --bulk-export --start-date "2023-01-01" --end-date "2024-12-31"
 ```
 
-This creates Google Docs named like `[channel name] slack messages 20230101`, `[channel name] slack messages 20230102`, etc., making it easy for AI tools like Gemini to query specific dates.
+This creates Google Docs named like `channel name slack messages 20230101`, `channel name slack messages 20230102`, etc., making it easy for AI tools like Gemini to query specific dates.
 
 **Q: What does bulk export do?**
 A: Bulk export mode:
