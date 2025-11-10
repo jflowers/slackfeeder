@@ -6,8 +6,11 @@ This project exports conversations from Slack, processes them into a human-reada
 
 - Export conversation history from public channels, private channels, DMs, and group chats
 - Processes Slack's JSON export into a clean, readable text format with human-readable timestamps
-- Creates and organizes conversations in Google Drive folders named with display names
+- Creates Google Docs (instead of text files) optimized for AI tools like Gemini
+- Organizes conversations in Google Drive folders named with display names
+- Creates one Google Doc per day with format: `[channel name] slack messages yyyymmdd`
 - Automatically shares folders with all conversation participants and keeps access synchronized with channel membership
+- Handles incremental updates by appending to existing daily docs (no duplicate headers)
 - Uses environment variables for secure configuration (perfect for CI/CD pipelines)
 - Handles existing folders gracefully (reuses existing folders, updates files)
 
@@ -242,11 +245,12 @@ python src/main.py --export-history --upload-to-drive --start-date "2024-01-01" 
 For exporting very large time periods (e.g., 2+ years), use the `--bulk-export` flag. This mode:
 
 - **Overrides all limits** (date range, message count, file size)
-- **Automatically chunks exports** into monthly files when:
+- **When uploading to Drive**: Creates daily Google Docs (same as normal mode) - one doc per day
+- **When NOT uploading to Drive**: Automatically chunks exports into monthly text files when:
   - Date range exceeds 30 days, OR
   - Message count exceeds 10,000 messages
-- **Creates monthly files** named like: `channel_name_history_2023-01_2025-11-06_14-30-45.txt`
-- **Makes it easier for AI tools** (like Gemini) to query specific time periods
+- **Monthly files** (local only) named like: `channel_name_history_2023-01_2025-11-06_14-30-45.txt`
+- **Daily Google Docs** (when uploading) named like: `[channel name] slack messages 20230115`
 
 **Example: Export 2 years of messages**
 
@@ -254,18 +258,19 @@ For exporting very large time periods (e.g., 2+ years), use the `--bulk-export` 
 python src/main.py --export-history --upload-to-drive --bulk-export --start-date "2023-01-01" --end-date "2024-12-31"
 ```
 
-This will automatically split the export into monthly files (e.g., `channel_history_2023-01_...txt`, `channel_history_2023-02_...txt`, etc.), making it much more efficient for tools like Gemini to consume specific time periods.
+When uploading to Drive, this creates daily Google Docs (one per day), making it easy for AI tools like Gemini to query specific dates. When exporting locally without `--upload-to-drive`, it creates monthly text files.
 
 **When to use bulk export:**
 - Exporting 2+ years of history
 - Exporting channels with >10,000 messages
-- When you need monthly chunks for easier querying
 - When you want to override default safety limits
 
 **When NOT to use bulk export:**
 - Regular weekly/monthly incremental exports (use normal mode)
 - Small date ranges (<30 days)
 - Channels with <10,000 messages
+
+**Note:** When using `--upload-to-drive`, bulk export creates daily Google Docs (same as normal mode). The bulk export flag is mainly useful for overriding limits and for local file exports where monthly chunking is applied.
 
 ### Example: Running Multiple Times
 
@@ -318,7 +323,10 @@ python src/main.py --export-history --upload-to-drive
 3. **`--upload-to-drive`**:
    - Connects to the Google Drive API
    - For each exported conversation, creates a folder (or uses existing) named with the conversation's display name
-   - Uploads the processed text file to the folder (each file has a unique timestamp to prevent overwriting)
+   - Groups messages by date (YYYYMMDD format) and creates one Google Doc per day
+   - Creates Google Docs with format: `[channel name] slack messages yyyymmdd`
+   - For new docs: Adds full metadata header with channel info and date
+   - For existing docs: Appends new messages with separator (no duplicate headers)
    - Automatically tracks the last export date for incremental updates:
      - Creates/updates a metadata file (`{channel_name}_last_export.json`) in each folder
      - Stores the timestamp of the latest message exported
@@ -338,6 +346,15 @@ Each conversation gets its own folder in Google Drive, named with the conversati
 - Channels: Uses the channel name (e.g., `team-orange`)
 - DMs: Uses the other participant's name (e.g., `John Doe`)
 - Group chats: Uses comma-separated participant names (e.g., `John Doe, Jane Smith`)
+
+**Daily Google Docs:** When uploading to Drive, messages are grouped by date and one Google Doc is created per day:
+- Format: `[channel name] slack messages yyyymmdd`
+- Example: `[team-orange] slack messages 20250115`
+- Each doc contains all messages from that specific day
+- New messages are appended to existing daily docs (no duplicate headers)
+- Optimized for AI tools like Gemini that work better with daily files
+
+**Local File Exports:** When not using `--upload-to-drive`, files are saved locally as text files with timestamps (e.g., `channel_name_history_2025-01-15_14-30-45.txt`).
 
 All current participants are automatically added as viewers to the folder, allowing them to access the conversation history. When members are added or removed from a channel, folder access is automatically updated on the next export run.
 
@@ -361,7 +378,11 @@ The script is designed to run weekly and automatically performs incremental upda
 
 - **First run**: Fetches all available message history
 - **Subsequent runs**: Automatically fetches only new messages since the last export
-- **File naming**: Each export creates a new file with a timestamp (e.g., `channel_name_history_2024-01-15_14-30-45.txt`) to prevent overwriting
+- **Daily Google Docs**: When uploading to Drive, messages are grouped by date and appended to existing daily docs
+  - Format: `[channel name] slack messages yyyymmdd`
+  - New messages are appended to the appropriate daily doc (no duplicate headers)
+  - Each day gets its own Google Doc, making it easy for AI tools to query specific dates
+- **Local files**: When not using `--upload-to-drive`, files are saved locally with timestamps (e.g., `channel_name_history_2024-01-15_14-30-45.txt`)
 - **State management**: The script stores the last export timestamp in a small metadata file (`{channel_name}_last_export.json`) **in Google Drive**, not locally
 - **CI/CD friendly**: Since state is stored in Drive, the script works perfectly in ephemeral CI/CD environments
 - **Manual date ranges**: You can still use `--start-date` and `--end-date` to override the automatic incremental behavior
@@ -369,9 +390,10 @@ The script is designed to run weekly and automatically performs incremental upda
 When you run the script weekly:
 1. It checks Google Drive for the last export timestamp (from a metadata file in each folder)
 2. Only fetches messages newer than that timestamp (unless `--start-date` is explicitly provided)
-3. Creates a new dated file in the same folder
-4. Saves the latest message timestamp to a metadata file in Drive (for next run)
-5. Manages folder permissions to keep access synchronized with channel membership:
+3. Groups new messages by date and appends them to the appropriate daily Google Doc
+4. Creates new daily docs for dates that don't exist yet
+5. Saves the latest message timestamp to a metadata file in Drive (for next run)
+6. Manages folder permissions to keep access synchronized with channel membership:
    - If participants already have access, no additional notifications are sent
    - Only new participants receive email notifications
    - Automatically revokes access for users who are no longer channel members
@@ -380,9 +402,10 @@ When you run the script weekly:
 **What Participants See:**
 - **First share:** Participants receive an email notification from Google Drive that they've been given access to a folder
 - **Subsequent runs:** No notifications sent (permissions already exist)
-- **Folder contents:** All weekly export files accumulate in the folder, creating a complete history over time
+- **Folder contents:** Daily Google Docs accumulate in the folder, one per day, creating a complete history over time
+- **Daily organization:** Each day's messages are in a separate Google Doc, making it easy to find and query specific dates
 
-This means you can share the folder with participants, and they'll see all the weekly export files accumulating over time. The script works identically whether run locally or in CI/CD - no state persistence between runs is required.
+This means you can share the folder with participants, and they'll see daily Google Docs accumulating over time. The script works identically whether run locally or in CI/CD - no state persistence between runs is required.
 
 ## Running in CI/CD
 
@@ -588,8 +611,8 @@ python src/main.py --export-history --upload-to-drive --bulk-export --start-date
 **Q: What does bulk export do?**
 A: Bulk export mode:
 - Overrides all safety limits (date range, message count, file size)
-- Automatically chunks large exports into monthly files
-- Creates files named with month/year (e.g., `channel_history_2023-01_...txt`)
+- When uploading to Drive: Creates daily Google Docs (same as normal mode)
+- When exporting locally: Automatically chunks large exports into monthly text files
 - Makes it easier for AI tools to query specific time periods
 
 **Q: When should I use bulk export vs regular export?**
