@@ -603,10 +603,12 @@ A: Folder access is automatically synchronized with channel membership on each e
 A: The script skips archived channels by default. To export them, you would need to modify the code.
 
 **Q: How do I export 2+ years of messages?**
-A: Use the `--bulk-export` flag along with your date range. The script will automatically split the export into monthly files:
+A: Use the `--bulk-export` flag along with your date range. When uploading to Drive, this creates daily Google Docs (one per day):
 ```bash
 python src/main.py --export-history --upload-to-drive --bulk-export --start-date "2023-01-01" --end-date "2024-12-31"
 ```
+
+This creates Google Docs named like `[channel name] slack messages 20230101`, `[channel name] slack messages 20230102`, etc., making it easy for AI tools like Gemini to query specific dates.
 
 **Q: What does bulk export do?**
 A: Bulk export mode:
