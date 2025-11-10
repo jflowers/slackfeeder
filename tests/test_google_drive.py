@@ -12,6 +12,38 @@ from googleapiclient.errors import HttpError
 from src.google_drive import GoogleDriveClient
 
 
+@pytest.fixture
+def mock_build_with_docs():
+    """Mock build function that returns both Drive and Docs services."""
+    with patch("src.google_drive.build") as mock_build:
+        # Mock Drive service
+        mock_drive_service = MagicMock()
+        mock_files = MagicMock()
+        mock_drive_service.files.return_value = mock_files
+
+        # Mock Docs service
+        mock_docs_service = MagicMock()
+        mock_documents = MagicMock()
+        mock_docs_service.documents.return_value = mock_documents
+
+        def build_side_effect(service_name, version, credentials):
+            if service_name == "drive":
+                return mock_drive_service
+            elif service_name == "docs":
+                return mock_docs_service
+            return MagicMock()
+
+        mock_build.side_effect = build_side_effect
+
+        yield {
+            "build": mock_build,
+            "drive_service": mock_drive_service,
+            "files": mock_files,
+            "docs_service": mock_docs_service,
+            "documents": mock_documents,
+        }
+
+
 class TestEscapeDriveQueryString:
     """Tests for _escape_drive_query_string method."""
 
@@ -261,6 +293,146 @@ class TestUploadFile:
                     client = GoogleDriveClient("fake_credentials.json")
             result = client.upload_file("/path/to/test.txt", "invalid!")
             assert result is None
+
+
+class TestCreateOrUpdateGoogleDoc:
+    """Tests for create_or_update_google_doc method."""
+
+    def test_create_new_doc(self, mock_build_with_docs):
+        """Test creating a new Google Doc."""
+        mocks = mock_build_with_docs
+        mock_files = mocks["files"]
+        mock_documents = mocks["documents"]
+
+        # Mock authentication
+        with patch("src.google_drive.GoogleDriveClient._authenticate") as mock_auth:
+            mock_auth.return_value = MagicMock()
+            client = GoogleDriveClient("credentials.json")
+
+            # Mock folder validation
+            with patch.object(client, "_validate_folder_id", return_value=True):
+                with patch.object(client, "_rate_limit"):
+                    # Mock file list (no existing doc)
+                    mock_list = MagicMock()
+                    mock_list.execute.return_value = {"files": []}
+                    mock_files.list.return_value = mock_list
+
+                    # Mock doc creation
+                    mock_create = MagicMock()
+                    mock_create.execute.return_value = {"documentId": "doc123"}
+                    mock_documents.create.return_value = mock_create
+
+                    # Mock file get (for moving to folder)
+                    mock_get = MagicMock()
+                    mock_get.execute.return_value = {"parents": ["root"]}
+                    mock_files.get.return_value = mock_get
+
+                    # Mock file update (move to folder)
+                    mock_update = MagicMock()
+                    mock_files.update.return_value = mock_update
+
+                    # Mock doc get (for getting end index)
+                    mock_doc_get = MagicMock()
+                    mock_doc_get.execute.return_value = {"body": {"content": [{"endIndex": 1}]}}
+                    mock_documents.get.return_value = mock_doc_get
+
+                    # Mock batch update (insert content)
+                    mock_batch_update = MagicMock()
+                    mock_documents.batchUpdate.return_value = mock_batch_update
+
+                    result = client.create_or_update_google_doc(
+                        "Test Doc", "Test content", "folder123"
+                    )
+
+                    assert result == "doc123"
+                    mock_documents.create.assert_called_once()
+
+    def test_append_to_existing_doc(self, mock_build_with_docs):
+        """Test appending to an existing Google Doc."""
+        mocks = mock_build_with_docs
+        mock_files = mocks["files"]
+        mock_documents = mocks["documents"]
+
+        with patch("src.google_drive.GoogleDriveClient._authenticate") as mock_auth:
+            mock_auth.return_value = MagicMock()
+            client = GoogleDriveClient("credentials.json")
+
+            with patch.object(client, "_validate_folder_id", return_value=True):
+                with patch.object(client, "_rate_limit"):
+                    # Mock file list (existing doc found)
+                    mock_list = MagicMock()
+                    mock_list.execute.return_value = {"files": [{"id": "doc123"}]}
+                    mock_files.list.return_value = mock_list
+
+                    # Mock doc get (for getting end index)
+                    mock_doc_get = MagicMock()
+                    mock_doc_get.execute.return_value = {"body": {"content": [{"endIndex": 10}]}}
+                    mock_documents.get.return_value = mock_doc_get
+
+                    # Mock batch update (append content)
+                    mock_batch_update = MagicMock()
+                    mock_documents.batchUpdate.return_value = mock_batch_update
+
+                    result = client.create_or_update_google_doc(
+                        "Test Doc", "New content", "folder123", overwrite=False
+                    )
+
+                    assert result == "doc123"
+                    mock_documents.batchUpdate.assert_called_once()
+
+    def test_replace_existing_doc_content(self, mock_build_with_docs):
+        """Test replacing content in an existing Google Doc."""
+        mocks = mock_build_with_docs
+        mock_files = mocks["files"]
+        mock_documents = mocks["documents"]
+
+        with patch("src.google_drive.GoogleDriveClient._authenticate") as mock_auth:
+            mock_auth.return_value = MagicMock()
+            client = GoogleDriveClient("credentials.json")
+
+            with patch.object(client, "_validate_folder_id", return_value=True):
+                with patch.object(client, "_rate_limit"):
+                    # Mock file list (existing doc found)
+                    mock_list = MagicMock()
+                    mock_list.execute.return_value = {"files": [{"id": "doc123"}]}
+                    mock_files.list.return_value = mock_list
+
+                    # Mock doc get (for getting end index)
+                    mock_doc_get = MagicMock()
+                    mock_doc_get.execute.return_value = {"body": {"content": [{"endIndex": 10}]}}
+                    mock_documents.get.return_value = mock_doc_get
+
+                    # Mock batch update (delete and insert)
+                    mock_batch_update = MagicMock()
+                    mock_documents.batchUpdate.return_value = mock_batch_update
+
+                    result = client.create_or_update_google_doc(
+                        "Test Doc", "New content", "folder123", overwrite=True
+                    )
+
+                    assert result == "doc123"
+                    # Should be called twice: once to delete, once to insert
+                    assert mock_documents.batchUpdate.call_count == 2
+
+    def test_create_doc_with_empty_content(self, mock_build_with_docs):
+        """Test that empty content is rejected."""
+        with patch("src.google_drive.GoogleDriveClient._authenticate") as mock_auth:
+            mock_auth.return_value = MagicMock()
+            client = GoogleDriveClient("credentials.json")
+
+            with patch.object(client, "_validate_folder_id", return_value=True):
+                result = client.create_or_update_google_doc("Test Doc", "", "folder123")
+                assert result is None
+
+    def test_create_doc_with_invalid_folder_id(self, mock_build_with_docs):
+        """Test creating doc with invalid folder ID."""
+        with patch("src.google_drive.GoogleDriveClient._authenticate") as mock_auth:
+            mock_auth.return_value = MagicMock()
+            client = GoogleDriveClient("credentials.json")
+
+            with patch.object(client, "_validate_folder_id", return_value=False):
+                result = client.create_or_update_google_doc("Test Doc", "Content", "invalid")
+                assert result is None
 
 
 class TestShareFolder:

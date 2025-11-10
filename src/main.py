@@ -1017,12 +1017,28 @@ Chunk: {chunk_idx} of {len(chunks)}
                     )
                     if folder_id:
                         for chunk_filepath, chunk_messages in chunk_files:
-                            file_id = google_drive_client.upload_file(chunk_filepath, folder_id)
-                            if not file_id:
-                                logger.error(f"Failed to upload chunk file {chunk_filepath}")
+                            # Read the file content
+                            try:
+                                with open(chunk_filepath, "r", encoding="utf-8") as f:
+                                    doc_content = f.read()
+
+                                # Extract doc name from filename (remove .txt extension)
+                                doc_name = os.path.basename(chunk_filepath).replace(".txt", "")
+
+                                # Create or update Google Doc
+                                doc_id = google_drive_client.create_or_update_google_doc(
+                                    doc_name, doc_content, folder_id, overwrite=False
+                                )
+                                if not doc_id:
+                                    logger.error(
+                                        f"Failed to create Google Doc for chunk {chunk_filepath}"
+                                    )
+                                    stats["upload_failed"] += 1
+                                else:
+                                    stats["uploaded"] += 1
+                            except IOError as e:
+                                logger.error(f"Failed to read chunk file {chunk_filepath}: {e}")
                                 stats["upload_failed"] += 1
-                            else:
-                                stats["uploaded"] += 1
 
                         # Save export metadata with latest timestamp from all chunks
                         if history:
@@ -1135,13 +1151,30 @@ Total Messages: {len(history)}
                     sanitized_folder_name, google_drive_folder_id
                 )
                 if folder_id:
-                    file_id = google_drive_client.upload_file(output_filepath, folder_id)
-                    if not file_id:
-                        logger.error(f"Failed to upload file for {channel_name}. Skipping sharing.")
+                    # Read the file content
+                    try:
+                        with open(output_filepath, "r", encoding="utf-8") as f:
+                            doc_content = f.read()
+
+                        # Extract doc name from filename (remove .txt extension)
+                        doc_name = os.path.basename(output_filepath).replace(".txt", "")
+
+                        # Create or update Google Doc
+                        doc_id = google_drive_client.create_or_update_google_doc(
+                            doc_name, doc_content, folder_id, overwrite=False
+                        )
+                        if not doc_id:
+                            logger.error(
+                                f"Failed to create Google Doc for {channel_name}. Skipping sharing."
+                            )
+                            stats["upload_failed"] += 1
+                            continue
+
+                        stats["uploaded"] += 1
+                    except IOError as e:
+                        logger.error(f"Failed to read file {output_filepath}: {e}")
                         stats["upload_failed"] += 1
                         continue
-
-                    stats["uploaded"] += 1
 
                     # Save export metadata to Drive (stateless - works in CI/CD)
                     # Use the latest message timestamp, or current time if no messages

@@ -45,6 +45,9 @@ class GoogleDriveClient:
             self.service = build("drive", "v3", credentials=self.creds)
             if not self.service:
                 raise ValueError("Failed to build Google Drive service")
+            self.docs_service = build("docs", "v1", credentials=self.creds)
+            if not self.docs_service:
+                raise ValueError("Failed to build Google Docs service")
             # Rate limiting state
             self._last_api_call_time = 0.0
             self._api_call_count = 0
@@ -227,7 +230,10 @@ class GoogleDriveClient:
             "GOOGLE_DRIVE_TOKEN_FILE", os.path.join(default_token_dir, "token.json")
         )
 
-        scopes = ["https://www.googleapis.com/auth/drive"]
+        scopes = [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/documents",
+        ]
 
         if os.path.exists(token_path):
             # Check for insecure file permissions and enforce security
@@ -320,7 +326,10 @@ class GoogleDriveClient:
             "GOOGLE_DRIVE_TOKEN_FILE", os.path.join(default_token_dir, "token.json")
         )
 
-        scopes = ["https://www.googleapis.com/auth/drive"]
+        scopes = [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/documents",
+        ]
 
         if os.path.exists(token_path):
             # Check for insecure file permissions and enforce security
@@ -516,6 +525,163 @@ class GoogleDriveClient:
         except HttpError as error:
             logger.error(f"An error occurred while uploading file '{file_name}': {error}")
             return None
+
+    def create_or_update_google_doc(
+        self, doc_name: str, content: str, folder_id: str, overwrite: bool = False
+    ) -> Optional[str]:
+        """Creates a new Google Doc or appends to an existing one.
+
+        Args:
+            doc_name: Name of the Google Doc (without .txt extension)
+            content: Text content to add to the document
+            folder_id: Google Drive folder ID where to create the doc
+            overwrite: If True and doc exists, replace content instead of appending
+
+        Returns:
+            Document ID if successful, None otherwise
+        """
+        # Validate folder ID
+        if not self._validate_folder_id(folder_id):
+            logger.error(f"Invalid folder ID format: {folder_id}")
+            return None
+
+        if not content:
+            logger.warning(f"Empty content provided for doc '{doc_name}', skipping")
+            return None
+
+        # Check if document already exists
+        escaped_doc_name = self._escape_drive_query_string(doc_name)
+        escaped_folder_id = self._escape_drive_query_string(folder_id)
+        query = (
+            f"name='{escaped_doc_name}' and '{escaped_folder_id}' in parents "
+            f"and mimeType='application/vnd.google-apps.document' and trashed=false"
+        )
+
+        existing_doc_id = None
+        try:
+            self._rate_limit()
+            results = (
+                self.service.files().list(q=query, fields="files(id, name)", pageSize=1).execute()
+            )
+            existing_files = results.get("files", [])
+            if existing_files:
+                existing_doc_id = existing_files[0]["id"]
+        except HttpError as error:
+            logger.warning(f"Error checking for existing doc '{doc_name}': {error}")
+
+        if existing_doc_id:
+            if overwrite:
+                # Replace entire content
+                try:
+                    # Get current document to find end index
+                    self._rate_limit()
+                    doc = self.docs_service.documents().get(documentId=existing_doc_id).execute()
+                    end_index = doc.get("body", {}).get("content", [{}])[-1].get("endIndex", 1)
+
+                    # Delete all content except the last newline
+                    if end_index > 1:
+                        requests = [
+                            {
+                                "deleteContentRange": {
+                                    "range": {
+                                        "startIndex": 1,
+                                        "endIndex": end_index - 1,
+                                    }
+                                }
+                            }
+                        ]
+                        self._rate_limit()
+                        self.docs_service.documents().batchUpdate(
+                            documentId=existing_doc_id, body={"requests": requests}
+                        ).execute()
+
+                    # Insert new content
+                    requests = [
+                        {
+                            "insertText": {
+                                "location": {"index": 1},
+                                "text": content,
+                            }
+                        }
+                    ]
+                    self._rate_limit()
+                    self.docs_service.documents().batchUpdate(
+                        documentId=existing_doc_id, body={"requests": requests}
+                    ).execute()
+                    logger.info(f"Replaced content in existing doc '{doc_name}'")
+                    return existing_doc_id
+                except HttpError as error:
+                    logger.error(f"Error replacing content in doc '{doc_name}': {error}")
+                    return None
+            else:
+                # Append content
+                try:
+                    # Get current document to find end index
+                    self._rate_limit()
+                    doc = self.docs_service.documents().get(documentId=existing_doc_id).execute()
+                    end_index = doc.get("body", {}).get("content", [{}])[-1].get("endIndex", 1)
+
+                    # Insert new content at the end (before the last newline)
+                    insert_index = max(1, end_index - 1)
+                    requests = [
+                        {
+                            "insertText": {
+                                "location": {"index": insert_index},
+                                "text": content,
+                            }
+                        }
+                    ]
+                    self._rate_limit()
+                    self.docs_service.documents().batchUpdate(
+                        documentId=existing_doc_id, body={"requests": requests}
+                    ).execute()
+                    logger.info(f"Appended content to existing doc '{doc_name}'")
+                    return existing_doc_id
+                except HttpError as error:
+                    logger.error(f"Error appending content to doc '{doc_name}': {error}")
+                    return None
+        else:
+            # Create new document
+            try:
+                # Create the document
+                self._rate_limit()
+                doc = self.docs_service.documents().create(body={"title": doc_name}).execute()
+                doc_id = doc.get("documentId")
+                if not doc_id:
+                    logger.error(f"Failed to get document ID for '{doc_name}'")
+                    return None
+
+                # Move document to the specified folder
+                self._rate_limit()
+                file = self.service.files().get(fileId=doc_id, fields="parents").execute()
+                previous_parents = ",".join(file.get("parents", []))
+                self._rate_limit()
+                self.service.files().update(
+                    fileId=doc_id,
+                    addParents=folder_id,
+                    removeParents=previous_parents,
+                    fields="id, parents",
+                ).execute()
+
+                # Insert content
+                requests = [
+                    {
+                        "insertText": {
+                            "location": {"index": 1},
+                            "text": content,
+                        }
+                    }
+                ]
+                self._rate_limit()
+                self.docs_service.documents().batchUpdate(
+                    documentId=doc_id, body={"requests": requests}
+                ).execute()
+
+                logger.info(f"Created new Google Doc '{doc_name}' with ID: {doc_id}")
+                return doc_id
+            except HttpError as error:
+                logger.error(f"Error creating Google Doc '{doc_name}': {error}")
+                return None
 
     def list_files_in_folder(self, folder_id: str, name_pattern: Optional[str] = None) -> list:
         """Lists files in a Google Drive folder.
