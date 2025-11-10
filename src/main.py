@@ -122,6 +122,46 @@ def replace_user_ids_in_text(
     return re.sub(pattern, replace_match, text)
 
 
+def group_messages_by_date(
+    history: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Group messages by date (YYYYMMDD format).
+
+    Args:
+        history: List of messages with 'ts' timestamps
+
+    Returns:
+        Dictionary mapping date strings (YYYYMMDD) to lists of messages
+    """
+    daily_groups: Dict[str, List[Dict[str, Any]]] = {}
+
+    for message in history:
+        ts_str = message.get("ts")
+        if not ts_str:
+            continue
+
+        try:
+            ts = float(ts_str)
+            if ts <= 0:
+                continue
+        except (ValueError, TypeError):
+            continue
+
+        msg_date = datetime.fromtimestamp(ts, tz=timezone.utc)
+        date_key = msg_date.strftime("%Y%m%d")
+
+        if date_key not in daily_groups:
+            daily_groups[date_key] = []
+
+        daily_groups[date_key].append(message)
+
+    # Sort messages within each day by timestamp
+    for date_key in daily_groups:
+        daily_groups[date_key].sort(key=lambda x: float(x.get("ts", 0)))
+
+    return daily_groups
+
+
 def preprocess_history(
     history_data: List[Dict[str, Any]],
     slack_client: SlackClient,
@@ -894,7 +934,136 @@ def main(args):
                     f"Large conversation detected ({len(history)} messages). This may take a while and use significant memory."
                 )
 
-            # Determine if we should chunk this export
+            # Group messages by date for daily Google Docs (when uploading to Drive)
+            if args.upload_to_drive:
+                # Group messages by date for daily file creation
+                daily_groups = group_messages_by_date(history)
+                logger.info(
+                    f"Grouped {len(history)} messages into {len(daily_groups)} daily group(s)"
+                )
+
+                # Process each daily group
+                daily_docs_created = []
+                sanitized_folder_name = sanitized_names["folder"]
+                folder_id = google_drive_client.create_folder(
+                    sanitized_folder_name, google_drive_folder_id
+                )
+
+                if folder_id:
+                    # Sort dates chronologically
+                    sorted_dates = sorted(daily_groups.keys())
+
+                    for date_key in sorted_dates:
+                        daily_messages = daily_groups[date_key]
+                        logger.info(
+                            f"Processing {len(daily_messages)} messages for date {date_key}"
+                        )
+
+                        # Process messages for this day
+                        processed_messages = preprocess_history(
+                            daily_messages, slack_client, people_cache
+                        )
+
+                        # Check for empty history after processing
+                        if not processed_messages or not processed_messages.strip():
+                            logger.warning(
+                                f"No processable content found for {date_key} of {channel_name}. Skipping."
+                            )
+                            continue
+
+                        # Create doc name: [channel name] slack messages yyyymmdd
+                        doc_name = f"[{channel_name}] slack messages {date_key}"
+
+                        # Check if doc already exists to determine if we need a header
+                        escaped_doc_name = google_drive_client._escape_drive_query_string(doc_name)
+                        escaped_folder_id = google_drive_client._escape_drive_query_string(
+                            folder_id
+                        )
+                        query = (
+                            f"name='{escaped_doc_name}' and '{escaped_folder_id}' in parents "
+                            f"and mimeType='application/vnd.google-apps.document' and trashed=false"
+                        )
+
+                        doc_exists = False
+                        try:
+                            google_drive_client._rate_limit()
+                            results = (
+                                google_drive_client.service.files()
+                                .list(q=query, fields="files(id, name)", pageSize=1)
+                                .execute()
+                            )
+                            if results.get("files"):
+                                doc_exists = True
+                        except Exception:
+                            pass  # Assume new doc if check fails
+
+                        # Prepare content: add header only for new docs
+                        if doc_exists:
+                            # Append separator and messages (no header for existing docs)
+                            content_to_add = f"\n\n{'='*80}\n\n{processed_messages}"
+                        else:
+                            # Add full header for new docs
+                            export_date = datetime.now(timezone.utc).strftime(
+                                "%Y-%m-%d %H:%M:%S UTC"
+                            )
+                            date_obj = datetime.strptime(date_key, "%Y%m%d").replace(
+                                tzinfo=timezone.utc
+                            )
+                            date_display = date_obj.strftime("%Y-%m-%d")
+                            metadata_header = f"""Slack Conversation Export
+Channel: {channel_name}
+Channel ID: {channel_id}
+Export Date: {export_date}
+Date: {date_display}
+Total Messages: {len(daily_messages)}
+
+{'='*80}
+
+"""
+                            content_to_add = metadata_header + processed_messages
+
+                        # Create or update Google Doc (append mode for incremental updates)
+                        doc_id = google_drive_client.create_or_update_google_doc(
+                            doc_name, content_to_add, folder_id, overwrite=False
+                        )
+
+                        if not doc_id:
+                            logger.error(
+                                f"Failed to create Google Doc for {date_key} of {channel_name}"
+                            )
+                            stats["upload_failed"] += 1
+                        else:
+                            daily_docs_created.append((doc_id, date_key, daily_messages))
+                            stats["uploaded"] += 1
+                            stats["processed"] += 1
+                            stats["total_messages"] += len(daily_messages)
+                            logger.info(f"Created/updated Google Doc for {date_key}")
+
+                    # Save export metadata with latest timestamp from all daily groups
+                    if history:
+                        latest_message_ts = max(float(msg.get("ts", 0)) for msg in history)
+                        safe_channel_name = sanitized_names["file"]
+                        google_drive_client.save_export_metadata(
+                            folder_id, safe_channel_name, str(latest_message_ts)
+                        )
+                        logger.info(f"Saved export metadata for {channel_name}")
+
+                    # Share folder with members
+                    share_folder_with_members(
+                        google_drive_client,
+                        folder_id,
+                        slack_client,
+                        channel_id,
+                        channel_name,
+                        channel_info,
+                        no_notifications_set,
+                        no_share_set,
+                        stats,
+                        sanitized_folder_name=sanitized_names["folder"],
+                    )
+                    continue  # Skip file-based export when uploading to Drive
+
+            # Determine if we should chunk this export (for local file exports)
             should_chunk = should_chunk_export(history, oldest_ts, latest_ts, args.bulk_export)
 
             if should_chunk:

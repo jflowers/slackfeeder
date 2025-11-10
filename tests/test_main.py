@@ -12,6 +12,7 @@ import pytest
 from src.main import (
     estimate_file_size,
     get_conversation_display_name,
+    group_messages_by_date,
     preprocess_history,
     replace_user_ids_in_text,
     should_chunk_export,
@@ -295,6 +296,114 @@ class TestReplaceUserIdsInText:
         assert "@Bob" in result
         assert "<@U123>" not in result
         assert "@U456" not in result
+
+
+class TestGroupMessagesByDate:
+    """Tests for group_messages_by_date function."""
+
+    def test_group_single_date(self):
+        """Test grouping messages from the same date."""
+        base_ts = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        history = [
+            {"ts": str(base_ts), "text": "Message 1"},
+            {"ts": str(base_ts + 3600), "text": "Message 2"},
+            {"ts": str(base_ts + 7200), "text": "Message 3"},
+        ]
+
+        result = group_messages_by_date(history)
+
+        assert len(result) == 1
+        assert "20230115" in result
+        assert len(result["20230115"]) == 3
+
+    def test_group_multiple_dates(self):
+        """Test grouping messages from different dates."""
+        base_date = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        history = [
+            {"ts": str(base_date.timestamp()), "text": "Jan 15 message"},
+            {"ts": str((base_date.replace(day=16)).timestamp()), "text": "Jan 16 message"},
+            {"ts": str((base_date.replace(day=17)).timestamp()), "text": "Jan 17 message"},
+        ]
+
+        result = group_messages_by_date(history)
+
+        assert len(result) == 3
+        assert "20230115" in result
+        assert "20230116" in result
+        assert "20230117" in result
+        assert len(result["20230115"]) == 1
+        assert len(result["20230116"]) == 1
+        assert len(result["20230117"]) == 1
+
+    def test_group_sorts_messages_within_date(self):
+        """Test that messages within a date are sorted by timestamp."""
+        base_ts = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        history = [
+            {"ts": str(base_ts + 7200), "text": "Message 3"},
+            {"ts": str(base_ts), "text": "Message 1"},
+            {"ts": str(base_ts + 3600), "text": "Message 2"},
+        ]
+
+        result = group_messages_by_date(history)
+
+        assert len(result) == 1
+        messages = result["20230115"]
+        assert len(messages) == 3
+        # Verify sorted order
+        assert float(messages[0]["ts"]) < float(messages[1]["ts"])
+        assert float(messages[1]["ts"]) < float(messages[2]["ts"])
+
+    def test_group_skips_messages_without_timestamp(self):
+        """Test that messages without timestamps are skipped."""
+        base_ts = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        history = [
+            {"ts": str(base_ts), "text": "Valid message"},
+            {"text": "No timestamp"},
+            {"ts": None, "text": "None timestamp"},
+        ]
+
+        result = group_messages_by_date(history)
+
+        assert len(result) == 1
+        assert "20230115" in result
+        assert len(result["20230115"]) == 1
+        assert result["20230115"][0]["text"] == "Valid message"
+
+    def test_group_handles_invalid_timestamps(self):
+        """Test that invalid timestamps are skipped."""
+        base_ts = datetime(2023, 1, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        history = [
+            {"ts": str(base_ts), "text": "Valid message"},
+            {"ts": "invalid", "text": "Invalid timestamp"},
+            {"ts": "-1", "text": "Negative timestamp"},
+        ]
+
+        result = group_messages_by_date(history)
+
+        assert len(result) == 1
+        assert "20230115" in result
+        assert len(result["20230115"]) == 1
+        assert result["20230115"][0]["text"] == "Valid message"
+
+    def test_group_empty_history(self):
+        """Test grouping empty history."""
+        result = group_messages_by_date([])
+        assert result == {}
+
+    def test_group_across_year_boundary(self):
+        """Test grouping messages across year boundary."""
+        dec_31 = datetime(2022, 12, 31, 12, 0, 0, tzinfo=timezone.utc)
+        jan_1 = datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        history = [
+            {"ts": str(dec_31.timestamp()), "text": "Dec 31"},
+            {"ts": str(jan_1.timestamp()), "text": "Jan 1"},
+        ]
+
+        result = group_messages_by_date(history)
+
+        assert len(result) == 2
+        assert "20221231" in result
+        assert "20230101" in result
 
 
 class TestGetConversationDisplayName:
