@@ -479,7 +479,7 @@ def _should_share_with_member(
         identifier_lower = identifier.strip().lower()
 
         # Match by Slack user ID
-        if identifier_lower == user_slack_id.lower():
+        if identifier_lower == user_slack_id:
             return True
 
         # Match by email
@@ -534,6 +534,16 @@ def share_folder_with_members(
 
     # Get shareMembers list if provided
     share_members = channel_info.get("shareMembers")
+    # Validate shareMembers is a list if provided
+    if share_members is not None:
+        if not isinstance(share_members, list):
+            logger.warning(
+                f"shareMembers must be a list for {channel_name}, got {type(share_members).__name__}. Ignoring."
+            )
+            share_members = None
+        elif len(share_members) == 0:
+            # Empty list = share with all (backward compatible)
+            share_members = None
     if share_members:
         logger.info(
             f"Selective sharing enabled for {channel_name}: sharing with {len(share_members)} specified member(s)"
@@ -1049,7 +1059,9 @@ def main(args):
                             continue
 
                         # Create doc name: channel name slack messages yyyymmdd
-                        doc_name = f"{channel_name} slack messages {date_key}"
+                        # Sanitize doc name to ensure it's valid for Google Drive (255 char limit, no invalid chars)
+                        doc_name_base = f"{channel_name} slack messages {date_key}"
+                        doc_name = sanitize_folder_name(doc_name_base)
 
                         # Check if doc already exists to determine if we need a header
                         escaped_doc_name = google_drive_client._escape_drive_query_string(doc_name)
@@ -1071,8 +1083,11 @@ def main(args):
                             )
                             if results.get("files"):
                                 doc_exists = True
-                        except Exception:
-                            pass  # Assume new doc if check fails
+                        except Exception as e:
+                            logger.debug(
+                                f"Error checking for existing doc '{doc_name}': {e}, assuming new doc"
+                            )
+                            # Assume new doc if check fails
 
                         # Prepare content: add header only for new docs
                         if doc_exists:
