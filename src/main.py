@@ -670,8 +670,12 @@ def share_folder_with_members(
         logger.info(f"Shared folder with {len(shared_emails)} participants")
 
 
-def main(args):
-    """Main function to run the Slack history export and upload process."""
+def _validate_and_setup_environment():
+    """Validate environment variables and setup clients.
+
+    Returns:
+        Tuple of (slack_client, google_drive_client, google_drive_folder_id)
+    """
     # Get configuration from environment variables with validation
     slack_bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
     google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
@@ -720,6 +724,111 @@ def main(args):
 
     slack_client = SlackClient(slack_bot_token)
     google_drive_client = GoogleDriveClient(google_drive_credentials_file)
+    return slack_client, google_drive_client, google_drive_folder_id
+
+
+def _setup_output_directory():
+    """Setup and validate output directory.
+
+    Returns:
+        Path to validated output directory
+    """
+    # Make output directory configurable
+    output_dir = os.getenv("SLACK_EXPORT_OUTPUT_DIR", "slack_exports")
+
+    # Validate output directory path early to prevent path traversal
+    original_output_dir = output_dir
+
+    # Check original path BEFORE normalization to catch path traversal attempts
+    if ".." in original_output_dir:
+        logger.error(
+            f"Invalid output directory path detected (contains '..'): {original_output_dir}. Aborting."
+        )
+        sys.exit(1)
+
+    # Then normalize and resolve
+    output_dir = os.path.abspath(os.path.normpath(original_output_dir))
+
+    # Optional: Restrict to a safe base directory (current working directory)
+    # This prevents writing outside the expected location
+    safe_base = os.path.abspath(os.getcwd())
+    if not output_dir.startswith(safe_base):
+        logger.error(
+            f"Output directory must be within current working directory. Got: {output_dir}, Base: {safe_base}"
+        )
+        sys.exit(1)
+
+    create_directory(output_dir)
+    return output_dir
+
+
+def _load_people_cache():
+    """Load people.json cache and opt-out sets.
+
+    Returns:
+        Tuple of (people_cache dict, no_notifications_set, no_share_set)
+    """
+    people_cache = {}
+    no_notifications_set = set()  # Set of emails who have opted out of notifications
+    no_share_set = set()  # Set of emails who have opted out of being shared with
+    people_json = load_json_file("config/people.json")
+    if people_json:
+        # Validate people.json structure
+        try:
+            validate_people_json(people_json)
+        except ValueError as e:
+            logger.warning(
+                f"Invalid people.json structure: {e}. Will lookup users on-demand from Slack API."
+            )
+            people_cache = {}
+        else:
+            people_cache = {p["slackId"]: p["displayName"] for p in people_json.get("people", [])}
+            # Build sets of opt-out preferences
+            for p in people_json.get("people", []):
+                if p.get("email"):
+                    email_lower = p["email"].lower()
+                    if p.get("noNotifications") is True:
+                        no_notifications_set.add(email_lower)
+                    if p.get("noShare") is True:
+                        no_share_set.add(email_lower)
+            logger.info(f"Loaded {len(people_cache)} users from people.json cache")
+            if no_notifications_set:
+                logger.info(
+                    f"Found {len(no_notifications_set)} user(s) who have opted out of notifications"
+                )
+            if no_share_set:
+                logger.info(
+                    f"Found {len(no_share_set)} user(s) who have opted out of being shared with"
+                )
+    else:
+        logger.info("No people.json found - will lookup users on-demand from Slack API")
+    return people_cache, no_notifications_set, no_share_set
+
+
+def _log_statistics(stats, upload_to_drive):
+    """Log export statistics.
+
+    Args:
+        stats: Statistics dictionary
+        upload_to_drive: Whether Drive upload was enabled
+    """
+    logger.info("=" * 80)
+    logger.info("Export Statistics:")
+    logger.info(f"  Processed: {stats['processed']}")
+    logger.info(f"  Skipped: {stats['skipped']}")
+    logger.info(f"  Failed: {stats['failed']}")
+    if upload_to_drive:
+        logger.info(f"  Uploaded to Drive: {stats['uploaded']}")
+        logger.info(f"  Upload Failed: {stats['upload_failed']}")
+        logger.info(f"  Folders shared: {stats['shared']}")
+        logger.info(f"  Share Failed: {stats['share_failed']}")
+    logger.info(f"  Total messages processed: {stats['total_messages']}")
+    logger.info("=" * 80)
+
+
+def main(args):
+    """Main function to run the Slack history export and upload process."""
+    slack_client, google_drive_client, google_drive_folder_id = _validate_and_setup_environment()
 
     if args.make_ref_files:
         logger.info("Fetching all conversations and users to create reference files...")
@@ -806,70 +915,11 @@ def main(args):
 
         logger.info(f"Found {len(channels_to_export)} conversation(s) to export")
 
-        # Load people.json as a cache/pre-warming mechanism (optional - will lookup on-demand if missing)
-        people_cache = {}
-        no_notifications_set = set()  # Set of emails who have opted out of notifications
-        no_share_set = set()  # Set of emails who have opted out of being shared with
-        people_json = load_json_file("config/people.json")
-        if people_json:
-            # Validate people.json structure
-            try:
-                validate_people_json(people_json)
-            except ValueError as e:
-                logger.warning(
-                    f"Invalid people.json structure: {e}. Will lookup users on-demand from Slack API."
-                )
-                people_cache = {}
-            else:
-                people_cache = {
-                    p["slackId"]: p["displayName"] for p in people_json.get("people", [])
-                }
-                # Build sets of opt-out preferences
-                for p in people_json.get("people", []):
-                    if p.get("email"):
-                        email_lower = p["email"].lower()
-                        if p.get("noNotifications") is True:
-                            no_notifications_set.add(email_lower)
-                        if p.get("noShare") is True:
-                            no_share_set.add(email_lower)
-                logger.info(f"Loaded {len(people_cache)} users from people.json cache")
-                if no_notifications_set:
-                    logger.info(
-                        f"Found {len(no_notifications_set)} user(s) who have opted out of notifications"
-                    )
-                if no_share_set:
-                    logger.info(
-                        f"Found {len(no_share_set)} user(s) who have opted out of being shared with"
-                    )
-        else:
-            logger.info("No people.json found - will lookup users on-demand from Slack API")
+        # Load people.json cache and opt-out sets
+        people_cache, no_notifications_set, no_share_set = _load_people_cache()
 
-        # Make output directory configurable
-        output_dir = os.getenv("SLACK_EXPORT_OUTPUT_DIR", "slack_exports")
-
-        # Validate output directory path early to prevent path traversal
-        original_output_dir = output_dir
-
-        # Check original path BEFORE normalization to catch path traversal attempts
-        if ".." in original_output_dir:
-            logger.error(
-                f"Invalid output directory path detected (contains '..'): {original_output_dir}. Aborting."
-            )
-            sys.exit(1)
-
-        # Then normalize and resolve
-        output_dir = os.path.abspath(os.path.normpath(original_output_dir))
-
-        # Optional: Restrict to a safe base directory (current working directory)
-        # This prevents writing outside the expected location
-        safe_base = os.path.abspath(os.getcwd())
-        if not output_dir.startswith(safe_base):
-            logger.error(
-                f"Output directory must be within current working directory. Got: {output_dir}, Base: {safe_base}"
-            )
-            sys.exit(1)
-
-        create_directory(output_dir)
+        # Setup output directory
+        output_dir = _setup_output_directory()
 
         # Initialize statistics tracking
         stats = {
@@ -1467,18 +1517,7 @@ Total Messages: {len(history)}
                     )
 
         # Log processing statistics
-        logger.info("=" * 80)
-        logger.info("Export Statistics:")
-        logger.info(f"  Processed: {stats['processed']}")
-        logger.info(f"  Skipped: {stats['skipped']}")
-        logger.info(f"  Failed: {stats['failed']}")
-        if args.upload_to_drive:
-            logger.info(f"  Uploaded to Drive: {stats['uploaded']}")
-            logger.info(f"  Upload Failed: {stats['upload_failed']}")
-            logger.info(f"  Folders shared: {stats['shared']}")
-            logger.info(f"  Share Failed: {stats['share_failed']}")
-        logger.info(f"  Total messages processed: {stats['total_messages']}")
-        logger.info("=" * 80)
+        _log_statistics(stats, args.upload_to_drive)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,11 @@ API_TIMEOUT_SECONDS = 30
 GOOGLE_DRIVE_RATE_LIMIT_DELAY = 0.5  # seconds between API calls
 GOOGLE_DRIVE_BATCH_SIZE = 10  # number of calls before adding extra delay
 GOOGLE_DRIVE_BATCH_DELAY = 1.0  # extra delay after batch
+# Google Drive API OAuth scopes
+GOOGLE_DRIVE_SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/documents",
+]
 
 
 class GoogleDriveClient:
@@ -132,12 +137,22 @@ class GoogleDriveClient:
             except ImportError:
                 pass
 
-    def _save_token_safely(self, token_path, creds):
-        """Safely write token file with locking to prevent corruption.
+    @staticmethod
+    def _write_token_file_core(
+        token_path: str,
+        creds: Credentials,
+        use_locking: bool = False,
+        lock_file_func=None,
+        unlock_file_func=None,
+    ) -> None:
+        """Core function to safely write token file with optional locking.
 
         Args:
             token_path: Path to token file
             creds: Credentials object to save
+            use_locking: Whether to use file locking (requires lock_file_func and unlock_file_func)
+            lock_file_func: Optional function to lock the file
+            unlock_file_func: Optional function to unlock the file
         """
         temp_path = token_path + ".tmp"
         try:
@@ -150,14 +165,18 @@ class GoogleDriveClient:
                 raise
 
             with open(temp_path, "w") as f:
-                # Lock file for exclusive write
-                try:
-                    self._lock_file(f)
+                if use_locking and lock_file_func and unlock_file_func:
+                    # Lock file for exclusive write
+                    try:
+                        lock_file_func(f)
+                        f.write(creds.to_json())
+                        f.flush()
+                        os.fsync(f.fileno())  # Ensure data is written to disk
+                    finally:
+                        unlock_file_func(f)
+                else:
+                    # Write without locking
                     f.write(creds.to_json())
-                    f.flush()
-                    os.fsync(f.fileno())  # Ensure data is written to disk
-                finally:
-                    self._unlock_file(f)
 
             # Set secure file permissions on temp file before move (fixes race condition)
             try:
@@ -187,6 +206,21 @@ class GoogleDriveClient:
                 except Exception:
                     pass
             raise
+
+    def _save_token_safely(self, token_path, creds):
+        """Safely write token file with locking to prevent corruption.
+
+        Args:
+            token_path: Path to token file
+            creds: Credentials object to save
+        """
+        self._write_token_file_core(
+            token_path,
+            creds,
+            use_locking=True,
+            lock_file_func=self._lock_file,
+            unlock_file_func=self._unlock_file,
+        )
 
     def _rate_limit(self):
         """Apply rate limiting for Google Drive API calls."""
@@ -230,10 +264,7 @@ class GoogleDriveClient:
             "GOOGLE_DRIVE_TOKEN_FILE", os.path.join(default_token_dir, "token.json")
         )
 
-        scopes = [
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/documents",
-        ]
+        scopes = GOOGLE_DRIVE_SCOPES
 
         if os.path.exists(token_path):
             # Check for insecure file permissions and enforce security
@@ -281,40 +312,7 @@ class GoogleDriveClient:
     @staticmethod
     def _save_token_safely_static(token_path: str, creds: Credentials) -> None:
         """Static version of _save_token_safely for use without instance."""
-        temp_path = token_path + ".tmp"
-
-        try:
-            token_dir = os.path.dirname(token_path) if os.path.dirname(token_path) else "."
-            if not os.path.exists(token_dir):
-                try:
-                    os.makedirs(token_dir, exist_ok=True)
-                except OSError as e:
-                    logger.error(f"Failed to create token directory {token_dir}: {e}")
-                    raise
-
-            with open(temp_path, "w") as token_file:
-                token_file.write(creds.to_json())
-
-            try:
-                os.chmod(temp_path, SECURE_FILE_PERMISSIONS)
-                logger.debug(f"Set secure permissions for token file: {temp_path}")
-            except OSError as e:
-                logger.warning(f"Could not set permissions on temp token file {temp_path}: {e}")
-
-            shutil.move(temp_path, token_path)
-
-            try:
-                current_mode = os.stat(token_path).st_mode & 0o777
-                if current_mode != SECURE_FILE_PERMISSIONS:
-                    os.chmod(token_path, SECURE_FILE_PERMISSIONS)
-                    logger.debug(f"Corrected permissions for token file: {token_path}")
-            except OSError as e:
-                logger.warning(f"Could not verify permissions on token file {token_path}: {e}")
-
-            logger.debug(f"Token saved successfully to {token_path}")
-        except Exception as e:
-            logger.error(f"Failed to save token: {e}")
-            raise
+        GoogleDriveClient._write_token_file_core(token_path, creds, use_locking=False)
 
     def _authenticate(self, credentials_file):
         """Authenticates with Google Drive API."""
@@ -326,10 +324,7 @@ class GoogleDriveClient:
             "GOOGLE_DRIVE_TOKEN_FILE", os.path.join(default_token_dir, "token.json")
         )
 
-        scopes = [
-            "https://www.googleapis.com/auth/drive",
-            "https://www.googleapis.com/auth/documents",
-        ]
+        scopes = GOOGLE_DRIVE_SCOPES
 
         if os.path.exists(token_path):
             # Check for insecure file permissions and enforce security
