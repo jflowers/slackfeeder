@@ -18,7 +18,7 @@ pip install --upgrade pip setuptools wheel > /dev/null 2>&1
 pip install . > /dev/null 2>&1
 
 # Generate requirements.txt with exact versions
-pip freeze | grep -E "(cachetools|google|slack|requests|python-dotenv|certifi|charset|idna|oauthlib|proto|protobuf|pyasn1|pyparsing|rsa|uritemplate|urllib3|httplib2)" > requirements.txt
+pip freeze | grep -E "(cachetools|google|slack|requests|python-dotenv|certifi|charset|idna|oauthlib|proto|protobuf|pyasn1|pyparsing|rsa|uritemplate|urllib3|httplib2)" | grep -v "^slackfeeder" > requirements.txt
 
 # Sort and clean up
 sort -u requirements.txt -o requirements.txt
