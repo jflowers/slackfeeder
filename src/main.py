@@ -444,6 +444,56 @@ def estimate_file_size(processed_history: str) -> int:
     return len(processed_history.encode("utf-8"))
 
 
+def _should_share_with_member(
+    member_id: str,
+    user_info: Optional[Dict[str, str]],
+    share_members: Optional[List[str]],
+) -> bool:
+    """Check if a member should be shared with based on shareMembers list.
+
+    Args:
+        member_id: Slack user ID
+        user_info: User info dictionary with slackId, email, displayName
+        share_members: Optional list of identifiers (user IDs, emails, or display names)
+
+    Returns:
+        True if member should be shared with, False otherwise
+    """
+    if not share_members or len(share_members) == 0:
+        # No shareMembers list or empty list = share with all (backward compatible)
+        return True
+
+    if not user_info:
+        return False
+
+    # Normalize identifiers for comparison
+    user_slack_id = user_info.get("slackId", "").lower()
+    user_email = user_info.get("email", "").lower()
+    user_display_name = user_info.get("displayName", "").strip().lower()
+
+    # Check each identifier in shareMembers
+    for identifier in share_members:
+        if not identifier:
+            continue
+
+        identifier_lower = identifier.strip().lower()
+
+        # Match by Slack user ID
+        if identifier_lower == user_slack_id.lower():
+            return True
+
+        # Match by email
+        if user_email and identifier_lower == user_email:
+            return True
+
+        # Match by display name (case-insensitive)
+        if user_display_name and identifier_lower == user_display_name:
+            return True
+
+    # Not found in shareMembers list
+    return False
+
+
 def share_folder_with_members(
     google_drive_client: GoogleDriveClient,
     folder_id: str,
@@ -465,6 +515,8 @@ def share_folder_with_members(
         channel_id: Slack channel ID
         channel_name: Display name of the channel
         channel_info: Channel configuration dictionary
+            - share: bool - whether to share (default: True)
+            - shareMembers: Optional[List[str]] - list of user IDs, emails, or display names to share with
         no_notifications_set: Set of emails who opted out of notifications
         no_share_set: Set of emails who opted out of being shared with
         stats: Statistics dictionary to update
@@ -480,19 +532,27 @@ def share_folder_with_members(
         logger.warning(f"No members found for {channel_name}. Skipping sharing.")
         return
 
+    # Get shareMembers list if provided
+    share_members = channel_info.get("shareMembers")
+    if share_members:
+        logger.info(
+            f"Selective sharing enabled for {channel_name}: sharing with {len(share_members)} specified member(s)"
+        )
+
     # Get current folder permissions to identify who should have access removed
     current_permissions = google_drive_client.get_folder_permissions(folder_id)
     current_member_emails = set()
 
-    # Build set of current member emails
+    # Build set of current member emails (only those who should have access)
     for member_id in members:
         user_info = slack_client.get_user_info(member_id)
         if user_info and user_info.get("email"):
             email = user_info["email"]
             if validate_email(email):
-                # Only include if they haven't opted out of sharing
+                # Check if member should be shared with (respects shareMembers and no_share_set)
                 if email.lower() not in no_share_set:
-                    current_member_emails.add(email.lower())
+                    if _should_share_with_member(member_id, user_info, share_members):
+                        current_member_emails.add(email.lower())
 
     # Revoke access for people who are no longer members
     revoked_count = 0
@@ -534,6 +594,7 @@ def share_folder_with_members(
     shared_emails = set()
     share_errors = []
     share_failures = 0
+    excluded_count = 0
     for i, member_id in enumerate(members):
         # Rate limit: pause every N shares to avoid API limits
         if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
@@ -550,6 +611,15 @@ def share_folder_with_members(
             # Skip if user has opted out of being shared with
             if email.lower() in no_share_set:
                 logger.debug(f"User {email} has opted out of being shared with, skipping")
+                excluded_count += 1
+                continue
+
+            # Check if member should be shared with based on shareMembers list
+            if not _should_share_with_member(member_id, user_info, share_members):
+                logger.debug(
+                    f"User {email} ({user_info.get('displayName', member_id)}) not in shareMembers list, skipping"
+                )
+                excluded_count += 1
                 continue
 
             if email not in shared_emails:
@@ -579,8 +649,15 @@ def share_folder_with_members(
     if share_errors:
         logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
 
-    # Note: sanitized_folder_name should be passed in or calculated here if needed for logging
-    logger.info(f"Shared folder with {len(shared_emails)} participants")
+    # Log summary
+    if share_members:
+        logger.info(
+            f"Selective sharing complete: shared with {len(shared_emails)} of {len(members)} channel members"
+        )
+        if excluded_count > 0:
+            logger.info(f"Excluded {excluded_count} member(s) not in shareMembers list")
+    else:
+        logger.info(f"Shared folder with {len(shared_emails)} participants")
 
 
 def main(args):

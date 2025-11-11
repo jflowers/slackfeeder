@@ -11,6 +11,17 @@
             "displayName": "proj-clasp",
             "export": true,
             "share": false
+        },
+        {
+            "id": "C06ABC12345",
+            "displayName": "selective-channel",
+            "export": true,
+            "share": true,
+            "shareMembers": [
+                "U1234567890",
+                "alice@example.com",
+                "Bob Smith"
+            ]
         }
     ]
 }

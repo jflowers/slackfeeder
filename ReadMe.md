@@ -187,6 +187,17 @@ Edit `config/channels.json` to control which conversations to export. By default
             "id": "D1234567890",
             "export": true,
             "share": false
+        },
+        {
+            "id": "C06ABC12345",
+            "displayName": "selective-channel",
+            "export": true,
+            "share": true,
+            "shareMembers": [
+                "U1234567890",
+                "alice@example.com",
+                "Bob Smith"
+            ]
         }
     ]
 }
@@ -195,6 +206,12 @@ Edit `config/channels.json` to control which conversations to export. By default
 - If `export` is not specified, it defaults to `true` (will be exported)
 - If `share` is not specified, it defaults to `true` (folder will be shared with participants)
 - Set `"share": false"` to export the conversation but not share the folder with participants
+- Set `"shareMembers"` to an array of user identifiers to share with only specific members:
+  - Can contain Slack user IDs (e.g., `"U1234567890"`)
+  - Can contain email addresses (e.g., `"alice@example.com"`)
+  - Can contain display names (e.g., `"Bob Smith"`)
+  - Matching is case-insensitive
+  - If `shareMembers` is not provided, shares with all channel members (backward compatible)
 - If `displayName` is not provided, the script will automatically fetch it from Slack (for channels) or construct it from participant names (for DMs and group chats)
 
 **Note:** `people.json` is optional but recommended - it speeds up processing by avoiding API lookups for known users. The system will automatically look up new users on-demand if they're not in the cache.
@@ -595,6 +612,25 @@ A: The bot needs these OAuth scopes:
 
 **Q: Can I export a conversation without sharing it with participants?**
 A: Yes. Set `"share": false"` in `config/channels.json` for that conversation. The folder will be created and files uploaded, but participants won't be given access.
+
+**Q: Can I share with only specific members of a channel?**
+A: Yes! Add a `"shareMembers"` array to the channel configuration. You can specify:
+- Slack user IDs (e.g., `"U1234567890"`)
+- Email addresses (e.g., `"alice@example.com"`)
+- Display names (e.g., `"Bob Smith"`)
+
+Example:
+```json
+{
+    "id": "C06ABC12345",
+    "displayName": "team-channel",
+    "export": true,
+    "share": true,
+    "shareMembers": ["U1234567890", "alice@example.com", "Bob Smith"]
+}
+```
+
+Matching is case-insensitive, and you can mix different identifier types in the same list. If `shareMembers` is not provided, the folder is shared with all channel members (backward compatible).
 
 **Q: What happens when someone is added or removed from a private channel?**
 A: Folder access is automatically synchronized with channel membership on each export run. When someone is added to a channel, they automatically receive folder access (with email notification on first share). When someone is removed from a channel, their folder access is automatically revoked (no notification sent). This ensures only current channel members have access to the exported conversation history.

@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.main import (
+    _should_share_with_member,
     estimate_file_size,
     get_conversation_display_name,
     group_messages_by_date,
@@ -709,6 +710,133 @@ class TestSplitMessagesByMonth:
             assert current_end < next_start or (
                 current_end.year == next_start.year and current_end.month < next_start.month
             )
+
+
+class TestShouldShareWithMember:
+    """Tests for _should_share_with_member function."""
+
+    def test_no_share_members_list_shares_with_all(self):
+        """Test that None shareMembers list shares with all (backward compatible)."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        result = _should_share_with_member("U123", user_info, None)
+        assert result is True
+
+    def test_empty_share_members_list_shares_with_all(self):
+        """Test that empty shareMembers list shares with all."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        result = _should_share_with_member("U123", user_info, [])
+        assert result is True
+
+    def test_match_by_slack_id(self):
+        """Test matching by Slack user ID."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        share_members = ["U123", "U456"]
+        result = _should_share_with_member("U123", user_info, share_members)
+        assert result is True
+
+    def test_match_by_email(self):
+        """Test matching by email address."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        share_members = ["other@example.com", "user@example.com"]
+        result = _should_share_with_member("U123", user_info, share_members)
+        assert result is True
+
+    def test_match_by_display_name(self):
+        """Test matching by display name."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        share_members = ["Other User", "Test User", "Another User"]
+        result = _should_share_with_member("U123", user_info, share_members)
+        assert result is True
+
+    def test_case_insensitive_matching(self):
+        """Test that matching is case-insensitive."""
+        user_info = {
+            "slackId": "U123",
+            "email": "User@Example.COM",
+            "displayName": "Test User",
+        }
+        # Test case-insensitive email matching
+        result1 = _should_share_with_member("U123", user_info, ["user@example.com"])
+        assert result1 is True
+
+        # Test case-insensitive display name matching
+        result2 = _should_share_with_member("U123", user_info, ["test user"])
+        assert result2 is True
+
+        # Test case-insensitive Slack ID matching
+        result3 = _should_share_with_member("U123", user_info, ["u123"])
+        assert result3 is True
+
+    def test_no_match_excludes_member(self):
+        """Test that members not in list are excluded."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        share_members = ["U456", "other@example.com", "Other User"]
+        result = _should_share_with_member("U123", user_info, share_members)
+        assert result is False
+
+    def test_no_user_info_excludes(self):
+        """Test that missing user info excludes member."""
+        result = _should_share_with_member("U123", None, ["U123"])
+        assert result is False
+
+    def test_mixed_identifier_types(self):
+        """Test that shareMembers can contain mixed identifier types."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        # Mix of IDs, emails, and names
+        share_members = ["U456", "other@example.com", "Test User", "U789"]
+        result = _should_share_with_member("U123", user_info, share_members)
+        assert result is True  # Matches by display name
+
+    def test_whitespace_handling(self):
+        """Test that whitespace in identifiers is handled correctly."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        # Identifiers with extra whitespace
+        share_members = ["  U123  ", "  Test User  ", "  user@example.com  "]
+        result = _should_share_with_member("U123", user_info, share_members)
+        assert result is True
+
+    def test_empty_strings_in_list_ignored(self):
+        """Test that empty strings in shareMembers are ignored."""
+        user_info = {
+            "slackId": "U123",
+            "email": "user@example.com",
+            "displayName": "Test User",
+        }
+        share_members = ["", "U123", "  ", None]
+        result = _should_share_with_member("U123", user_info, share_members)
+        assert result is True  # Should match U123
 
 
 class TestEstimateFileSize:
