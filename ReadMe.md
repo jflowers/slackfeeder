@@ -406,7 +406,8 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
    The script automatically scrolls through the conversation, extracts messages as they become visible, and saves them to `browser_exports/response_dom_extraction.json`.
    
    **Note:** Automated scrolling handles the scrolling for you - Slack uses virtual scrolling/lazy loading, so messages must be scrolled into view before they're rendered in the DOM. The script automatically presses PageDown keys to load messages and extracts them as they become visible.
-4. **Process and upload to Google Drive**:
+
+3. **Process and upload to Google Drive**:
    ```bash
    python src/main.py --browser-export-dm --upload-to-drive \
      --browser-response-dir browser_exports \
