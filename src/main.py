@@ -1575,11 +1575,6 @@ if __name__ == "__main__":
         type=str,
         help="Optional conversation ID for browser export metadata.",
     )
-    parser.add_argument(
-        "--use-dom-extraction",
-        action="store_true",
-        help="Extract messages directly from DOM instead of API responses (requires active browser session).",
-    )
 
     args = parser.parse_args()
 
@@ -1641,74 +1636,32 @@ if __name__ == "__main__":
         output_dir = Path(args.browser_output_dir)
         conversation_name = args.browser_conversation_name
 
-        logger.info("Browser-based DM export mode")
+        logger.info("Browser-based DM export mode (DOM extraction)")
         logger.info(f"Response directory: {response_dir}")
         logger.info(f"Output directory: {output_dir}")
         logger.info(f"Conversation name: {conversation_name}")
 
         processor = BrowserResponseProcessor()
-        response_files = []
         
-        # Check if using DOM extraction
-        if args.use_dom_extraction:
-            logger.info("Using DOM extraction mode")
-            try:
-                # Import MCP tools - these should be available when running via Cursor
-                # For now, we'll need to pass them in or use a wrapper
-                logger.warning("DOM extraction requires MCP chrome-devtools tools")
-                logger.info("Attempting DOM extraction...")
-                
-                # Try to use MCP tools if available
-                # Note: In practice, this would be called with actual MCP tool functions
-                # For now, we'll create a wrapper that can be called externally
-                logger.info("DOM extraction must be called with MCP tools. Creating extraction script...")
-                
-                # Save DOM extraction result to a temporary response file
-                response_dir.mkdir(parents=True, exist_ok=True)
-                dom_response_file = response_dir / "response_dom_extraction.json"
-                
-                logger.info("Please run DOM extraction separately and save result to response_dom_extraction.json")
-                logger.info("Or use the extract_messages_from_dom function with MCP tools")
-                
-                # Check if DOM extraction file exists
-                if dom_response_file.exists():
-                    logger.info(f"Found DOM extraction file: {dom_response_file}")
-                    response_files = [dom_response_file]
-                else:
-                    logger.error("DOM extraction file not found. Please extract messages first.")
-                    logger.info("You can use: from src.browser_scraper import extract_messages_from_dom")
-                    logger.info("Then call: extract_messages_from_dom(mcp_evaluate_script)")
-                    sys.exit(1)
-            except Exception as e:
-                logger.error(f"DOM extraction failed: {e}", exc_info=True)
-                sys.exit(1)
-        else:
-            # Use API response files
-            if not response_dir.exists():
-                logger.error(f"Response directory does not exist: {response_dir}")
-                logger.info("Please capture API responses first or specify a valid --browser-response-dir")
-                logger.info("Or use --use-dom-extraction to extract from DOM")
-                sys.exit(1)
-
-            # Sort files numerically by the number in the filename (response_0.json, response_1.json, etc.)
-            # This handles cases where there are 10+ files correctly
-            def extract_number(path: Path) -> int:
-                """Extract number from filename like 'response_42.json' -> 42"""
-                try:
-                    name = path.stem  # 'response_42'
-                    number_str = name.split('_', 1)[1] if '_' in name else '0'
-                    return int(number_str)
-                except (ValueError, IndexError):
-                    # Fallback to file modification time if filename parsing fails
-                    return int(path.stat().st_mtime)
-            
-            response_files = sorted(response_dir.glob("response_*.json"), key=extract_number)
-
-            if not response_files:
-                logger.error(f"No response files found in {response_dir}")
-                logger.info("Please capture API responses first. See ReadMe.md for instructions.")
-                logger.info("Or use --use-dom-extraction to extract from DOM")
-                sys.exit(1)
+        # DOM extraction is the only method - look for response_dom_extraction.json
+        response_dir.mkdir(parents=True, exist_ok=True)
+        dom_response_file = response_dir / "response_dom_extraction.json"
+        
+        if not dom_response_file.exists():
+            logger.error("DOM extraction file not found. Please extract messages first.")
+            logger.info("")
+            logger.info("To extract messages from DOM:")
+            logger.info("1. Open Slack in a browser and navigate to the conversation")
+            logger.info("2. Scroll to load all messages in the date range")
+            logger.info("3. Use MCP chrome-devtools tools to run DOM extraction")
+            logger.info("   Example: Use scripts/extract_dom_messages.py or call extract_messages_from_dom()")
+            logger.info("4. Save the result to: response_dom_extraction.json")
+            logger.info("")
+            logger.info("See BROWSER_EXPORT.md for detailed instructions.")
+            sys.exit(1)
+        
+        logger.info(f"Found DOM extraction file: {dom_response_file}")
+        response_files = [dom_response_file]
 
         # Parse date range if provided
         oldest_ts = None

@@ -319,67 +319,52 @@ python src/main.py --export-history --upload-to-drive
 
 ## Browser-Based DM Export (No Slack App Required)
 
-**Note:** This feature is experimental and requires manual browser setup. It cannot run in CI/CD pipelines but provides an alternative way to export DMs without creating a Slack app.
+**Note:** This feature requires manual browser setup and chrome-devtools MCP server access. It cannot run in CI/CD pipelines but provides an alternative way to export DMs without creating a Slack app.
 
 ### Overview
 
 The browser-based export method allows you to export Slack DMs by:
 1. Opening Slack in a browser (already logged in)
-2. Using chrome-devtools MCP server to capture network requests
-3. Processing captured API responses into export files
+2. Using chrome-devtools MCP server to extract messages directly from the DOM
+3. Processing extracted messages into export files
 
-This method doesn't require a Slack bot token or app setup - it uses your existing browser session.
+This method doesn't require a Slack bot token or app setup - it uses your existing browser session and reads messages directly from the rendered HTML.
 
 ### Prerequisites
 
 - Chrome or Chromium browser with DevTools Protocol access
-- chrome-devtools MCP server configured (for automated capture)
-- OR manual capture of API responses (see below)
+- chrome-devtools MCP server configured
+- Browser session with Slack conversation open
 
-### Method 1: Automated Capture (with chrome-devtools MCP)
-
-If you have chrome-devtools MCP server configured:
+### Usage
 
 1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export
-2. **Select the browser page** in chrome-devtools MCP (if needed)
-3. **Run the capture script** - The script will automatically scroll through the conversation and capture API responses:
-   ```bash
-   python scripts/browser_export_dm.py --capture-only --response-dir browser_exports/api_responses --scroll-attempts 50
+2. **Scroll through conversation** - Scroll to load all messages in your desired date range
+   - Use PageUp/PageDown keys for reliable scrolling
+   - Scroll backward to load older messages, forward for newer messages
+3. **Extract messages from DOM** - Use MCP chrome-devtools tools to run DOM extraction:
+   ```python
+   # Use the helper script
+   python scripts/extract_dom_messages.py
    ```
-   
-   **No manual scrolling required!** The script uses JavaScript to programmatically scroll the page.
-   If JavaScript scrolling doesn't work, you can use keyboard scrolling with `--use-keyboard-scroll`.
-   
-   Or use Cursor's MCP tools directly (see below)
+   Or use Cursor's MCP tools directly with `extract_messages_from_dom()` function.
+   This will save messages to `browser_exports/api_responses/response_dom_extraction.json`
 4. **Process and upload to Google Drive**:
    ```bash
    python src/main.py --browser-export-dm --upload-to-drive \
      --browser-response-dir browser_exports/api_responses \
-     --browser-conversation-name "Tara"
+     --browser-conversation-name "Tara" \
+     --start-date 2025-11-01 \
+     --end-date 2025-11-18
    ```
    Or process locally without Google Drive:
    ```bash
    python src/main.py --browser-export-dm \
      --browser-response-dir browser_exports/api_responses \
      --browser-output-dir slack_exports \
-     --browser-conversation-name "Tara"
-   ```
-
-### Method 2: Manual Capture (without MCP)
-
-If you don't have MCP server access, you can manually capture API responses:
-
-1. **Open Slack DM in browser** - Navigate to the DM conversation
-2. **Open browser DevTools** - Press F12 or right-click → Inspect
-3. **Go to Network tab** - Filter for "conversations.history"
-4. **Scroll through conversation** - As you scroll up, Slack makes API calls
-5. **Save API responses**:
-   - Right-click on each `conversations.history` request
-   - Select "Copy" → "Copy response"
-   - Save to `browser_exports/api_responses/response_0.json`, `response_1.json`, etc.
-6. **Process captured responses**:
-   ```bash
-   python src/main.py --browser-export-dm --browser-response-dir browser_exports/api_responses --browser-output-dir slack_exports --browser-conversation-name "Tara"
+     --browser-conversation-name "Tara" \
+     --start-date 2025-11-01 \
+     --end-date 2025-11-18
    ```
 
 ### Command-Line Options
@@ -389,7 +374,7 @@ python src/main.py --browser-export-dm [OPTIONS]
 ```
 
 **Options:**
-- `--browser-response-dir DIR` - Directory containing captured API responses (default: `browser_exports/api_responses`)
+- `--browser-response-dir DIR` - Directory containing DOM extraction file (default: `browser_exports/api_responses`)
 - `--browser-output-dir DIR` - Directory to write export files when not using `--upload-to-drive` (default: `slack_exports`)
 - `--browser-conversation-name NAME` - Name for the conversation (used in filenames and folder name, default: `DM`)
 - `--browser-conversation-id ID` - Optional conversation ID for metadata
@@ -398,7 +383,7 @@ python src/main.py --browser-export-dm [OPTIONS]
 - `--upload-to-drive` - Upload to Google Drive as Google Docs (same format as Slack App export)
 
 **Date Range Filtering:**
-You can filter messages by date range when processing captured responses:
+You can filter messages by date range when processing extracted messages:
 ```bash
 # Export only messages from October 2024
 python src/main.py --browser-export-dm \
@@ -408,7 +393,7 @@ python src/main.py --browser-export-dm \
   --end-date "2024-10-31"
 ```
 
-The date filtering happens **after** capture, so you can capture all messages once and then filter them multiple times with different date ranges.
+The date filtering happens **after** extraction, so you can extract all messages once and then filter them multiple times with different date ranges.
 
 **Google Drive Integration:**
 When using `--upload-to-drive`, the browser export:

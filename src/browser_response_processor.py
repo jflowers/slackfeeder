@@ -1,8 +1,10 @@
 """
-Process browser-captured Slack API responses and convert to export format.
+Process browser-extracted Slack messages and convert to export format.
 
-This module processes API responses captured from Slack's conversations.history
-endpoint and converts them into the same format used by the main export functionality.
+This module processes messages extracted from Slack's DOM (via DOM extraction)
+and converts them into the same format used by the main export functionality.
+It can also process messages from API responses if needed, but DOM extraction
+is the recommended method due to Slack's client-side caching.
 """
 
 import json
@@ -17,7 +19,11 @@ logger = setup_logging()
 
 
 class BrowserResponseProcessor:
-    """Process browser-captured Slack API responses into export format."""
+    """Process browser-extracted Slack messages into export format.
+    
+    Handles messages extracted from DOM or API responses, with DOM extraction
+    being the recommended method.
+    """
 
     def __init__(self, user_map: Optional[Dict[str, str]] = None):
         """Initialize processor.
@@ -289,10 +295,10 @@ class BrowserResponseProcessor:
         oldest_ts: Optional[str] = None,
         latest_ts: Optional[str] = None,
     ) -> Tuple[int, Dict[str, int]]:
-        """Process API response files and write messages to export files.
+        """Process message files and write messages to export files.
 
         Args:
-            response_files: List of paths to API response JSON files
+            response_files: List of paths to message JSON files (from DOM extraction or API responses)
             output_dir: Directory to write output files
             conversation_name: Name of the conversation (for filename)
             oldest_ts: Optional oldest timestamp (Unix timestamp string) to filter messages
@@ -453,7 +459,7 @@ class BrowserResponseProcessor:
         """Process responses and group by date for Google Drive upload.
 
         Args:
-            response_files: List of paths to API response JSON files
+            response_files: List of paths to message JSON files (from DOM extraction or API responses)
             conversation_name: Name of the conversation
             conversation_id: Optional conversation ID (for metadata)
             oldest_ts: Optional oldest timestamp (Unix timestamp string) to filter messages

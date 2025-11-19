@@ -2,81 +2,78 @@
 
 ## Overview
 
-This feature allows you to export Slack DMs without requiring a Slack app or bot token. It works by capturing network requests from a browser session where you're already logged into Slack.
+This feature allows you to export Slack DMs without requiring a Slack app or bot token. It works by extracting messages directly from the DOM of a browser session where you're already logged into Slack.
+
+**Why DOM Extraction?** Slack's API responses are often cached client-side, returning empty message arrays even when messages are visible. DOM extraction reads messages directly from the rendered HTML, making it reliable.
 
 ## Architecture
 
 ### Components
 
-1. **`src/browser_scraper.py`** - Browser control and network request capture
-   - `BrowserScraper` class for managing browser sessions
-   - Functions to extract messages and metadata from API responses
-   - Network request filtering utilities
+1. **`src/browser_scraper.py`** - Browser control and DOM extraction
+   - `extract_messages_from_dom()` function for extracting messages from HTML
+   - JavaScript code to parse Slack's DOM structure
+   - Message extraction with user names, timestamps, and text
 
-2. **`src/browser_response_processor.py`** - Process captured API responses
-   - `BrowserResponseProcessor` class for processing responses
+2. **`src/browser_response_processor.py`** - Process extracted messages
+   - `BrowserResponseProcessor` class for processing messages
    - Message extraction, deduplication, and formatting
    - Date-based grouping and file generation
 
-3. **`scripts/browser_export_dm.py`** - Standalone script for browser export
-   - Can be used with chrome-devtools MCP server for automated capture
-   - Can process manually captured responses
-   - Command-line interface for both capture and processing
+3. **`scripts/extract_dom_messages.py`** - Helper script for DOM extraction
+   - Uses MCP chrome-devtools tools to extract messages
+   - Saves results to `response_dom_extraction.json`
+   - Handles deduplication and message combining
 
 4. **`src/main.py`** - Integration with main application
    - `--browser-export-dm` flag for browser export mode
-   - Processes captured responses into export format
+   - Processes extracted messages into export format
    - Integrated with existing project structure
 
 ## Usage
 
-### Method 1: Using Main Application
+### Step-by-Step Process
 
-1. **Capture API responses** (manually or with MCP):
-   - Open Slack DM in browser
-   - Scroll through conversation to trigger API calls
-   - Capture `conversations.history` responses
-   - Save to `browser_exports/api_responses/response_*.json`
-
-2. **Process responses**:
+1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export
+2. **Scroll through conversation** - Use PageUp/PageDown keys to load all messages in your date range
+   - Scroll backward to load older messages
+   - Scroll forward to load newer messages
+   - Ensure all messages in your date range are visible
+3. **Extract messages from DOM** - Use MCP chrome-devtools tools:
+   ```python
+   # Option 1: Use the helper script
+   python scripts/extract_dom_messages.py
+   
+   # Option 2: Use MCP tools directly in Cursor
+   # Call extract_messages_from_dom() with mcp_chrome-devtools_evaluate_script
+   ```
+   This saves messages to `browser_exports/api_responses/response_dom_extraction.json`
+4. **Process and upload to Google Drive**:
+   ```bash
+   python src/main.py --browser-export-dm --upload-to-drive \
+     --browser-response-dir browser_exports/api_responses \
+     --browser-conversation-name "Tara" \
+     --start-date 2025-11-01 \
+     --end-date 2025-11-18
+   ```
+   Or process locally without Google Drive:
    ```bash
    python src/main.py --browser-export-dm \
      --browser-response-dir browser_exports/api_responses \
      --browser-output-dir slack_exports \
-     --browser-conversation-name "Tara"
+     --browser-conversation-name "Tara" \
+     --start-date 2025-11-01 \
+     --end-date 2025-11-18
    ```
 
-### Method 2: Using Standalone Script
+### Multiple Extraction Passes
 
-```bash
-# Process only (if you already have captured responses)
-python scripts/browser_export_dm.py --process-only \
-  --response-dir browser_exports/api_responses \
-  --output-dir slack_exports \
-  --conversation-name "Tara"
+If you need to extract messages from different parts of the conversation:
 
-# Capture and process (requires MCP tools)
-python scripts/browser_export_dm.py \
-  --response-dir browser_exports/api_responses \
-  --output-dir slack_exports \
-  --conversation-name "Tara" \
-  --scroll-attempts 50
-```
-
-## Manual Capture Process
-
-If you don't have chrome-devtools MCP server:
-
-1. **Open Slack DM** in browser
-2. **Open DevTools** (F12)
-3. **Go to Network tab**
-4. **Filter for "conversations.history"**
-5. **Scroll up** in the conversation
-6. **Right-click each request** → Copy → Copy response
-7. **Save to JSON files** in `browser_exports/api_responses/`:
-   - `response_0.json`
-   - `response_1.json`
-   - etc.
+1. Scroll to first section and extract
+2. Scroll to next section and extract again (the script will deduplicate)
+3. Continue until all messages are captured
+4. Process the combined `response_dom_extraction.json` file
 
 ## Output Format
 
@@ -112,10 +109,10 @@ By default, user IDs are shown as-is (e.g., `U02PHQFTBC6`). To map IDs to names:
 ## Limitations
 
 - **DM only** - Currently supports DMs, not channels or group chats
-- **Manual setup** - Requires browser session and manual/MCP capture
+- **Manual setup** - Requires browser session and MCP chrome-devtools access
 - **Not CI/CD compatible** - Cannot run in automated pipelines
-- **Session-dependent** - API tokens are session-specific
-- **Rate limiting** - Must respect Slack's rate limits
+- **Requires scrolling** - Messages must be scrolled into view before extraction
+- **DOM-dependent** - Relies on Slack's HTML structure (may break if Slack changes their UI)
 
 ## Testing
 
@@ -124,11 +121,10 @@ Run tests with:
 pytest tests/test_browser_scraper.py -v
 ```
 
-All 21 tests should pass, covering:
-- Message extraction from API responses
+All tests should pass, covering:
+- Message extraction from DOM
 - Metadata extraction
-- Network request filtering
-- User ID discovery
+- User name extraction
 - Message formatting
 - Date grouping
 - Deduplication
@@ -137,11 +133,11 @@ All 21 tests should pass, covering:
 ## Future Enhancements
 
 Potential improvements:
-- Automatic user ID to name mapping via Slack API (if token available)
+- Automatic scrolling and extraction in a single pass
 - Support for channels and group chats
-- Integration with Google Drive upload (like main export)
-- Better MCP integration for automated capture
+- Better handling of threads and replies
 - Progress tracking for long conversations
+- Automatic retry on extraction failures
 
 ## Files Created
 
