@@ -25,7 +25,7 @@ This feature allows you to export Slack DMs without requiring a Slack app or bot
    - Saves results to `response_dom_extraction.json`
    - Handles deduplication and message combining
 
-4. **`src/main.py`** - Integration with main application
+4. **`src/main.py`** - Main application entry point
    - `--browser-export-dm` flag for browser export mode
    - Processes extracted messages into export format
    - Integrated with existing project structure
@@ -86,25 +86,9 @@ Each file contains:
 - Messages with user names, timestamps, and text
 - Reactions, attachments, and files (if present)
 
-## User ID Mapping
+## User Name Extraction
 
-By default, user IDs are shown as-is (e.g., `U02PHQFTBC6`). To map IDs to names:
-
-1. Create a JSON file with user mappings:
-   ```json
-   {
-     "U02PHQFTBC6": "Tara",
-     "UUR9FNZ88": "Jay Flowers"
-   }
-   ```
-
-2. Use with the script:
-   ```bash
-   python scripts/browser_export_dm.py --process-only \
-     --user-map user_map.json \
-     --response-dir browser_exports/api_responses \
-     --output-dir slack_exports
-   ```
+User names are automatically extracted from the DOM. The extraction script identifies user names from button elements in the message containers. If a user name cannot be determined, it will be shown as "unknown".
 
 ## Limitations
 
@@ -141,9 +125,9 @@ Potential improvements:
 
 ## Files Created
 
-- `src/browser_scraper.py` - Browser scraper module
-- `src/browser_response_processor.py` - Response processor module
-- `scripts/browser_export_dm.py` - Standalone script
+- `src/browser_scraper.py` - Browser scraper module with DOM extraction
+- `src/browser_response_processor.py` - Message processor module
+- `scripts/extract_dom_messages.py` - Helper script for DOM extraction
 - `tests/test_browser_scraper.py` - Test suite
 - `ReadMe.md` - Updated with browser export documentation
 - `BROWSER_EXPORT.md` - This file
