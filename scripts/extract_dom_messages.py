@@ -42,28 +42,31 @@ MAX_SCROLL_ATTEMPTS = 100  # Maximum scroll attempts before stopping
 def extract_and_save_dom_messages(
     output_file: Path,
     mcp_evaluate_script,
+    mcp_press_key,
     append: bool = False,
-    auto_scroll: bool = False,
-    mcp_press_key=None,
+    auto_scroll: bool = True,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract messages from DOM and save to file.
 
+    Automatically scrolls through the conversation to load all messages by default.
+    Uses MCP tools to press PageDown keys and extract messages as they become visible.
+
     Args:
         output_file: Path to save extracted messages
         mcp_evaluate_script: MCP function to evaluate JavaScript
+        mcp_press_key: MCP function to press keys (required for scrolling)
         append: If True, append to existing file; if False, overwrite
-        auto_scroll: If True, automatically scroll through conversation to load all messages
-        mcp_press_key: MCP function to press keys (required if auto_scroll=True)
+        auto_scroll: If True, automatically scroll through conversation (default: True)
         start_date: Optional start date filter (YYYY-MM-DD format)
         end_date: Optional end date filter (YYYY-MM-DD format)
 
     Returns:
         Dictionary with extraction results
     """
-    if auto_scroll and not mcp_press_key:
-        raise ValueError("mcp_press_key is required when auto_scroll=True")
+    if not mcp_press_key:
+        raise ValueError("mcp_press_key is required for automated scrolling")
     
     script = extract_messages_from_dom_script()
     
@@ -270,21 +273,21 @@ if __name__ == "__main__":
     # Example usage from Cursor:
     # from scripts.extract_dom_messages import extract_and_save_dom_messages
     # 
-    # # Without auto-scrolling (manual scroll first):
-    # result = extract_and_save_dom_messages(
-    #     Path("browser_exports/response_dom_extraction.json"),
-    #     mcp_chrome-devtools_evaluate_script
-    # )
-    #
-    # # With auto-scrolling:
+    # # Automated scrolling (default):
     # result = extract_and_save_dom_messages(
     #     Path("browser_exports/response_dom_extraction.json"),
     #     mcp_chrome-devtools_evaluate_script,
-    #     auto_scroll=True,
-    #     mcp_press_key=mcp_chrome-devtools_press_key,
+    #     mcp_chrome-devtools_press_key,
     #     start_date="2025-11-01",
     #     end_date="2025-11-18"
     # )
+    #
+    # # Without auto-scrolling (manual scroll first, then extract):
+    # result = extract_and_save_dom_messages(
+    #     Path("browser_exports/response_dom_extraction.json"),
+    #     mcp_chrome-devtools_evaluate_script,
+    #     mcp_chrome-devtools_press_key,
+    #     auto_scroll=False
+    # )
     logger.info("This script should be imported and called with MCP tools")
-    logger.info("Example: extract_and_save_dom_messages(output_file, mcp_evaluate_script)")
-    logger.info("With auto-scroll: extract_and_save_dom_messages(output_file, mcp_evaluate_script, auto_scroll=True, mcp_press_key=mcp_press_key)")
+    logger.info("Example: extract_and_save_dom_messages(output_file, mcp_evaluate_script, mcp_press_key)")
