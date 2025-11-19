@@ -1675,15 +1675,48 @@ if __name__ == "__main__":
         response_files = [dom_response_file]
 
         # Parse date range if provided
+        # Determine oldest timestamp for incremental fetching
+        # If --start-date is explicitly provided, use it; otherwise check Google Drive for last export
         oldest_ts = None
-        latest_ts = None
         if args.start_date:
             oldest_ts = convert_date_to_timestamp(args.start_date)
             if oldest_ts is None:
                 logger.error(f"Invalid start date format: {args.start_date}")
                 sys.exit(1)
-            logger.info(f"Filtering messages from: {args.start_date} ({oldest_ts})")
+            logger.info(f"Using explicit start date: {args.start_date} ({oldest_ts})")
+        elif args.upload_to_drive:
+            # Check Google Drive for last export timestamp (incremental export)
+            # This happens before we create the folder, so we need to create it first
+            sanitized_folder_name = sanitize_folder_name(conversation_name)
+            safe_conversation_name = sanitize_filename(conversation_name)
+            google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
+            
+            # Create or get folder to check for metadata
+            folder_id = google_drive_client.create_folder(
+                sanitized_folder_name, google_drive_folder_id
+            )
+            if folder_id:
+                last_export_ts = google_drive_client.get_latest_export_timestamp(
+                    folder_id, safe_conversation_name
+                )
+                if last_export_ts:
+                    oldest_ts = last_export_ts
+                    last_export_dt = datetime.fromtimestamp(
+                        float(last_export_ts), tz=timezone.utc
+                    )
+                    logger.info(
+                        f"Fetching messages since last export: {last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                    )
+                else:
+                    logger.info("No previous export found in Drive, processing all messages")
+            else:
+                logger.info("Could not access/create folder, processing all messages")
+        else:
+            logger.info(
+                "Not uploading to Drive, processing all messages (use --start-date for incremental export)"
+            )
 
+        latest_ts = None
         if args.end_date:
             latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
             if latest_ts is None:
@@ -1695,7 +1728,7 @@ if __name__ == "__main__":
         if oldest_ts and latest_ts:
             if float(oldest_ts) > float(latest_ts):
                 logger.error(
-                    f"Start date ({args.start_date}) must be before end date ({args.end_date})"
+                    f"Start date ({args.start_date or 'last export'}) must be before end date ({args.end_date})"
                 )
                 sys.exit(1)
 
@@ -1727,6 +1760,20 @@ if __name__ == "__main__":
             # Initialize Google Drive client
             google_drive_client = GoogleDriveClient(google_drive_credentials_file)
 
+            # Sanitize conversation name for folder (needed for metadata check)
+            sanitized_folder_name = sanitize_folder_name(conversation_name)
+            safe_conversation_name = sanitize_filename(conversation_name)
+
+            # Create or get folder (may have been created earlier for metadata check)
+            folder_id = google_drive_client.create_folder(
+                sanitized_folder_name, google_drive_folder_id
+            )
+            if not folder_id:
+                logger.error(f"Failed to create/get folder for {conversation_name}")
+                sys.exit(1)
+
+            logger.info(f"Using folder: {sanitized_folder_name} ({folder_id})")
+
             # Process responses for Google Drive
             logger.info(f"Processing {len(response_files)} response files for Google Drive upload")
             daily_groups, user_map = processor.process_responses_for_google_drive(
@@ -1736,19 +1783,6 @@ if __name__ == "__main__":
             if not daily_groups:
                 logger.warning("No messages found to upload")
                 sys.exit(1)
-
-            # Sanitize conversation name for folder
-            sanitized_folder_name = sanitize_folder_name(conversation_name)
-
-            # Create or get folder
-            folder_id = google_drive_client.create_folder(
-                sanitized_folder_name, google_drive_folder_id
-            )
-            if not folder_id:
-                logger.error(f"Failed to create/get folder for {conversation_name}")
-                sys.exit(1)
-
-            logger.info(f"Using folder: {sanitized_folder_name} ({folder_id})")
 
             # Process each day and create/update Google Docs
             stats = {
@@ -1837,7 +1871,7 @@ Total Messages: {len(daily_messages)}
                     stats["total_messages"] += len(daily_messages)
                     logger.info(f"Created/updated Google Doc for {date_key}")
 
-            # Save export metadata
+            # Save export metadata (for incremental exports)
             if daily_groups:
                 # Get latest timestamp from all messages
                 all_messages_flat = []
@@ -1845,7 +1879,6 @@ Total Messages: {len(daily_messages)}
                     all_messages_flat.extend(messages)
                 if all_messages_flat:
                     latest_message_ts = max(float(msg.get("ts", 0)) for msg in all_messages_flat)
-                    safe_conversation_name = sanitize_filename(conversation_name)
                     google_drive_client.save_export_metadata(
                         folder_id, safe_conversation_name, str(latest_message_ts)
                     )
