@@ -128,7 +128,7 @@ if __name__ == "__main__":
     # Example usage from Cursor:
     # from scripts.extract_dom_messages import extract_and_save_dom_messages
     # result = extract_and_save_dom_messages(
-    #     Path("browser_exports/api_responses/response_dom_extraction.json"),
+    #     Path("browser_exports/response_dom_extraction.json"),
     #     mcp_chrome-devtools_evaluate_script
     # )
     logger.info("This script should be imported and called with MCP tools")

@@ -388,20 +388,22 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
 **Before starting:** Ensure Chrome is running with remote debugging (see Setup above) and the chrome-devtools MCP server is configured in Cursor.
 
 1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export in the Chrome window you started with remote debugging
-2. **Scroll through conversation** - Scroll to load all messages in your desired date range
+2. **Scroll through conversation** - Scroll to load all messages in your desired date range into view
+   - DOM extraction can only read messages that are currently visible/rendered in the browser
    - Use PageUp/PageDown keys for reliable scrolling
    - Scroll backward to load older messages, forward for newer messages
+   - Ensure all messages in your date range are scrolled into view before extraction
 3. **Extract messages from DOM** - Use MCP chrome-devtools tools to run DOM extraction:
    ```python
    # Use the helper script
    python scripts/extract_dom_messages.py
    ```
    Or use Cursor's MCP tools directly with `extract_messages_from_dom()` function.
-   This will save messages to `browser_exports/api_responses/response_dom_extraction.json`
+   This will save messages to `browser_exports/response_dom_extraction.json`
 4. **Process and upload to Google Drive**:
    ```bash
    python src/main.py --browser-export-dm --upload-to-drive \
-     --browser-response-dir browser_exports/api_responses \
+     --browser-response-dir browser_exports \
      --browser-conversation-name "Tara" \
      --start-date 2025-11-01 \
      --end-date 2025-11-18
@@ -409,7 +411,7 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
    Or process locally without Google Drive:
    ```bash
    python src/main.py --browser-export-dm \
-     --browser-response-dir browser_exports/api_responses \
+     --browser-response-dir browser_exports \
      --browser-output-dir slack_exports \
      --browser-conversation-name "Tara" \
      --start-date 2025-11-01 \
@@ -423,7 +425,7 @@ python src/main.py --browser-export-dm [OPTIONS]
 ```
 
 **Options:**
-- `--browser-response-dir DIR` - Directory containing DOM extraction file (default: `browser_exports/api_responses`)
+- `--browser-response-dir DIR` - Directory containing DOM extraction file (default: `browser_exports`)
 - `--browser-output-dir DIR` - Directory to write export files when not using `--upload-to-drive` (default: `slack_exports`)
 - `--browser-conversation-name NAME` - Name for the conversation (used in filenames and folder name, default: `DM`)
 - `--browser-conversation-id ID` - Optional conversation ID for metadata

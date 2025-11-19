@@ -1555,8 +1555,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--browser-response-dir",
         type=str,
-        default="browser_exports/api_responses",
-        help="Directory containing captured API responses for browser export (default: browser_exports/api_responses).",
+        default="browser_exports",
+        help="Directory containing DOM extraction file for browser export (default: browser_exports).",
     )
     parser.add_argument(
         "--browser-output-dir",
