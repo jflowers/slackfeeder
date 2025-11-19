@@ -36,23 +36,40 @@ class BrowserResponseProcessor:
         self.processed_message_ids: Set[str] = set()
 
     def discover_user_ids(self, messages: List[Dict[str, Any]]) -> Dict[str, str]:
-        """Discover user IDs from messages.
+        """Discover user IDs and names from messages.
 
         Args:
             messages: List of message dictionaries
 
         Returns:
-            Dictionary mapping user IDs to display names (or IDs if name unknown)
+            Dictionary mapping user IDs to display names.
+            If messages contain display names instead of IDs, creates a mapping
+            that preserves the display names.
         """
-        user_ids = set()
+        user_map = {}
         for msg in messages:
             user_id = msg.get("user")
-            if user_id:
-                user_ids.add(user_id)
+            if not user_id:
+                continue
+            
+            # Check if this is a user ID (starts with U, length > 8) or a display name
+            if user_id.startswith("U") and len(user_id) > 8:
+                # It's a user ID - use it as key, keep existing mapping or use ID as fallback
+                if user_id not in user_map:
+                    user_map[user_id] = self.user_map.get(user_id, user_id)
+            else:
+                # It's likely a display name from DOM extraction
+                # Create a mapping from name to name (identity mapping)
+                # This preserves the display name we extracted
+                if user_id not in user_map.values():
+                    # Use a synthetic key or the name itself
+                    # For browser export, we'll use the display name as both key and value
+                    # This allows the format_message functions to work correctly
+                    user_map[user_id] = user_id
 
-        # Update map with discovered IDs (keep existing mappings)
-        discovered = {uid: self.user_map.get(uid, uid) for uid in user_ids}
-        return discovered
+        # Update with any existing mappings
+        user_map.update(self.user_map)
+        return user_map
 
     def parse_timestamp(self, ts: str) -> datetime:
         """Convert Slack timestamp to datetime object.
@@ -64,6 +81,45 @@ class BrowserResponseProcessor:
             datetime object
         """
         return datetime.fromtimestamp(float(ts))
+
+    def replace_user_ids_in_text(
+        self, text: str, user_map: Dict[str, str]
+    ) -> str:
+        """Replace user IDs in message text with user display names.
+
+        Handles Slack user mention formats:
+        - <@U1234567890> (standard mention format)
+        - @U1234567890 (mention without angle brackets)
+
+        Args:
+            text: Message text that may contain user IDs
+            user_map: Mapping of user IDs to display names
+
+        Returns:
+            Text with user IDs replaced by display names (if found in user_map)
+        """
+        if not text:
+            return text
+
+        import re
+
+        # Pattern to match Slack user mentions: <@U...> or @U...
+        pattern = r"<@(U[A-Z0-9]+)>|@(U[A-Z0-9]+)"
+
+        def replace_match(match: re.Match) -> str:
+            # Extract user ID from either capture group
+            user_id = match.group(1) or match.group(2)
+            if not user_id:
+                return match.group(0)  # Return original if no match
+
+            # Look up display name in user_map
+            display_name = user_map.get(user_id)
+            if display_name:
+                return f"@{display_name}"
+            # If not found, return original mention
+            return match.group(0)
+
+        return re.sub(pattern, replace_match, text)
 
     def format_message_text(self, message: Dict[str, Any]) -> str:
         """Extract and format message text, handling blocks and rich text.
@@ -110,8 +166,14 @@ class BrowserResponseProcessor:
         user_id = message.get("user", "")
         text = self.format_message_text(message)
 
-        # Get user name
-        user_name = user_map.get(user_id, user_id)
+        # Get user name (match main export: "Unknown User" if no user_id)
+        user_name = "Unknown User"
+        if user_id:
+            if user_id.startswith("U") and len(user_id) > 8:
+                user_name = user_map.get(user_id, user_id)
+            else:
+                # Display name from DOM extraction
+                user_name = user_id
 
         # Parse timestamp
         try:
@@ -171,8 +233,14 @@ class BrowserResponseProcessor:
         text = self.format_message_text(message)
         files = message.get("files", [])
 
-        # Get user name
-        user_name = user_map.get(user_id, user_id)
+        # Get user name (match main export: "Unknown User" if no user_id)
+        user_name = "Unknown User"
+        if user_id:
+            if user_id.startswith("U") and len(user_id) > 8:
+                user_name = user_map.get(user_id, user_id)
+            else:
+                # Display name from DOM extraction
+                user_name = user_id
 
         # Format timestamp like main export
         formatted_time = format_timestamp(ts)
@@ -248,8 +316,8 @@ class BrowserResponseProcessor:
             elif text and files:
                 text += " [File attached]"
 
-            # Note: User ID replacement in text would need SlackClient, skip for now
-            # In browser export, user IDs in text will remain as-is
+            # Replace user IDs in message text with display names from user_map
+            text = self.replace_user_ids_in_text(text, user_map)
 
             thread_key = message.get("thread_ts", message.get("ts"))
             if not thread_key:
@@ -260,7 +328,16 @@ class BrowserResponseProcessor:
 
             ts = message.get("ts")
             user_id = message.get("user", "")
-            name = user_map.get(user_id, user_id)
+            # Handle both user IDs and display names in user_map
+            # Match main export behavior: use "Unknown User" if no user_id, otherwise look up
+            name = "Unknown User"
+            if user_id:
+                if user_id.startswith("U") and len(user_id) > 8:
+                    # Likely a user ID, look it up
+                    name = user_map.get(user_id, user_id)
+                else:
+                    # Likely a display name from DOM extraction, use it directly
+                    name = user_id
 
             text = text.replace("\n", "\n    ")
 
