@@ -1657,7 +1657,7 @@ if __name__ == "__main__":
             logger.info("   Example: Use scripts/extract_dom_messages.py or call extract_messages_from_dom()")
             logger.info("4. Save the result to: response_dom_extraction.json")
             logger.info("")
-            logger.info("See BROWSER_EXPORT.md for detailed instructions.")
+            logger.info("See ReadMe.md for detailed instructions.")
             sys.exit(1)
         
         logger.info(f"Found DOM extraction file: {dom_response_file}")
