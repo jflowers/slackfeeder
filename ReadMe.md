@@ -390,11 +390,22 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
 1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export in the Chrome window you started with remote debugging
 2. **Extract messages from DOM** - Use MCP chrome-devtools tools to run automated DOM extraction:
    ```python
-   # Use the helper script
-   python scripts/extract_dom_messages.py
+   # Use the helper script with automated scrolling (default)
+   from scripts.extract_dom_messages import extract_and_save_dom_messages
+   from pathlib import Path
+   
+   result = extract_and_save_dom_messages(
+       Path("browser_exports/response_dom_extraction.json"),
+       mcp_chrome-devtools_evaluate_script,
+       mcp_chrome-devtools_press_key,
+       start_date="2025-11-01",  # Optional
+       end_date="2025-11-18"     # Optional
+   )
    ```
-   Or use Cursor's MCP tools directly with `extract_messages_from_dom()` function.
-   This will save messages to `browser_exports/response_dom_extraction.json`
+   
+   The script automatically scrolls through the conversation, extracts messages as they become visible, and saves them to `browser_exports/response_dom_extraction.json`.
+   
+   **Note:** Automated scrolling handles the scrolling for you - Slack uses virtual scrolling/lazy loading, so messages must be scrolled into view before they're rendered in the DOM. The script automatically presses PageDown keys to load messages and extracts them as they become visible.
 4. **Process and upload to Google Drive**:
    ```bash
    python src/main.py --browser-export-dm --upload-to-drive \
