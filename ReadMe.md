@@ -333,12 +333,61 @@ This method doesn't require a Slack bot token or app setup - it uses your existi
 ### Prerequisites
 
 - Chrome or Chromium browser with DevTools Protocol access
-- chrome-devtools MCP server configured
+- chrome-devtools MCP server configured in Cursor
 - Browser session with Slack conversation open
+
+### Setup
+
+#### 1. Configure chrome-devtools MCP Server
+
+Add the chrome-devtools MCP server to your Cursor configuration. In your Cursor MCP settings file (typically `~/.cursor/mcp.json` or similar), add:
+
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "chrome-devtools-mcp@latest",
+        "--browser-url=http://127.0.0.1:9222"
+      ]
+    }
+  }
+}
+```
+
+**Note:** You may need to restart Cursor after adding this configuration for the MCP server to be available.
+
+#### 2. Start Chrome with Remote Debugging
+
+Start Chrome with remote debugging enabled on port 9222:
+
+**macOS:**
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-stable
+```
+
+**Linux:**
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-stable
+```
+
+**Windows:**
+```bash
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir=C:\temp\chrome-profile-stable
+```
+
+**Important Notes:**
+- The `--user-data-dir` flag creates a separate Chrome profile, preventing conflicts with your regular Chrome session
+- Keep this Chrome window open while using the browser export feature
+- You can use this Chrome instance normally - navigate to Slack, log in, and open the conversation you want to export
+- The MCP server will connect to this Chrome instance via the DevTools Protocol on port 9222
 
 ### Usage
 
-1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export
+**Before starting:** Ensure Chrome is running with remote debugging (see Setup above) and the chrome-devtools MCP server is configured in Cursor.
+
+1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export in the Chrome window you started with remote debugging
 2. **Scroll through conversation** - Scroll to load all messages in your desired date range
    - Use PageUp/PageDown keys for reliable scrolling
    - Scroll backward to load older messages, forward for newer messages
