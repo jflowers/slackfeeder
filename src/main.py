@@ -1678,6 +1678,11 @@ if __name__ == "__main__":
         # Determine oldest timestamp for incremental fetching
         # If --start-date is explicitly provided, use it; otherwise check Google Drive for last export
         oldest_ts = None
+        google_drive_client = None  # Will be initialized if needed for incremental export
+        sanitized_folder_name = None
+        safe_conversation_name = None
+        google_drive_folder_id = None
+        
         if args.start_date:
             oldest_ts = convert_date_to_timestamp(args.start_date)
             if oldest_ts is None:
@@ -1686,7 +1691,28 @@ if __name__ == "__main__":
             logger.info(f"Using explicit start date: {args.start_date} ({oldest_ts})")
         elif args.upload_to_drive:
             # Check Google Drive for last export timestamp (incremental export)
-            # This happens before we create the folder, so we need to create it first
+            # Initialize Google Drive client early to check for metadata
+            google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+            if not google_drive_credentials_file:
+                logger.error(
+                    "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
+                )
+                sys.exit(1)
+
+            try:
+                google_drive_credentials_file = os.path.abspath(
+                    os.path.expanduser(google_drive_credentials_file)
+                )
+                if not os.path.exists(google_drive_credentials_file):
+                    logger.error(
+                        f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
+                    )
+                    sys.exit(1)
+            except (OSError, ValueError) as e:
+                logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
+                sys.exit(1)
+
+            google_drive_client = GoogleDriveClient(google_drive_credentials_file)
             sanitized_folder_name = sanitize_folder_name(conversation_name)
             safe_conversation_name = sanitize_filename(conversation_name)
             google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
@@ -1734,35 +1760,33 @@ if __name__ == "__main__":
 
         # Check if uploading to Google Drive
         if args.upload_to_drive:
-            # Validate Google Drive setup
-            google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
-            if not google_drive_credentials_file:
-                logger.error(
-                    "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
-                )
-                sys.exit(1)
-
-            try:
-                google_drive_credentials_file = os.path.abspath(
-                    os.path.expanduser(google_drive_credentials_file)
-                )
-                if not os.path.exists(google_drive_credentials_file):
+            # Google Drive client may have been initialized earlier for incremental export check
+            if google_drive_client is None:
+                # Validate Google Drive setup
+                google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+                if not google_drive_credentials_file:
                     logger.error(
-                        f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
+                        "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
                     )
                     sys.exit(1)
-            except (OSError, ValueError) as e:
-                logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
-                sys.exit(1)
 
-            google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
+                try:
+                    google_drive_credentials_file = os.path.abspath(
+                        os.path.expanduser(google_drive_credentials_file)
+                    )
+                    if not os.path.exists(google_drive_credentials_file):
+                        logger.error(
+                            f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
+                        )
+                        sys.exit(1)
+                except (OSError, ValueError) as e:
+                    logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
+                    sys.exit(1)
 
-            # Initialize Google Drive client
-            google_drive_client = GoogleDriveClient(google_drive_credentials_file)
-
-            # Sanitize conversation name for folder (needed for metadata check)
-            sanitized_folder_name = sanitize_folder_name(conversation_name)
-            safe_conversation_name = sanitize_filename(conversation_name)
+                google_drive_client = GoogleDriveClient(google_drive_credentials_file)
+                sanitized_folder_name = sanitize_folder_name(conversation_name)
+                safe_conversation_name = sanitize_filename(conversation_name)
+                google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
 
             # Create or get folder (may have been created earlier for metadata check)
             folder_id = google_drive_client.create_folder(

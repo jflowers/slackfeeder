@@ -454,7 +454,7 @@ python src/main.py --browser-export-dm [OPTIONS]
 - `--end-date DATE` - Filter messages until this date (YYYY-MM-DD format, optional)
 - `--upload-to-drive` - Upload to Google Drive as Google Docs (same format as Slack App export)
 
-**Date Range Filtering:**
+**Date Range Filtering and Incremental Exports:**
 You can filter messages by date range when processing extracted messages:
 ```bash
 # Export only messages from October 2024
@@ -465,7 +465,29 @@ python src/main.py --browser-export-dm \
   --end-date "2024-10-31"
 ```
 
-The date filtering happens **after** extraction, so you can extract all messages once and then filter them multiple times with different date ranges.
+**Incremental Exports (Pick up where you left off):**
+
+The browser export supports incremental exports just like the main Slack App export. If you use `--upload-to-drive` without specifying `--start-date`, it will automatically check Google Drive for the last export timestamp and only process new messages since then.
+
+```bash
+# First export - exports all messages
+python src/main.py --browser-export-dm --upload-to-drive \
+  --browser-response-dir browser_exports \
+  --browser-conversation-name "Tara"
+
+# Second export - automatically picks up from last export (no --start-date needed)
+python src/main.py --browser-export-dm --upload-to-drive \
+  --browser-response-dir browser_exports \
+  --browser-conversation-name "Tara"
+```
+
+The incremental export feature:
+- Automatically finds the last export timestamp from Google Drive metadata
+- Only processes messages newer than the last export
+- Saves metadata after each export for the next run
+- Works statelessly (no local files needed) - perfect for CI/CD
+
+**Note:** Date filtering happens **after** extraction, so you can extract all messages once and then filter them multiple times with different date ranges. However, for incremental exports with `--upload-to-drive`, the filtering happens during processing based on the last export timestamp.
 
 **Google Drive Integration:**
 When using `--upload-to-drive`, the browser export:
