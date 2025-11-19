@@ -389,7 +389,7 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
 
 1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export in the Chrome window you started with remote debugging
 2. **Scroll through conversation** - Scroll to load all messages in your desired date range into view
-   - DOM extraction can only read messages that are currently visible/rendered in the browser
+   - **Why scrolling is needed:** Slack uses virtual scrolling/lazy loading - only messages currently visible in the viewport are rendered in the DOM. Messages that haven't been scrolled into view don't exist in the HTML that can be extracted. Scrolling causes Slack to load and render those messages into the DOM.
    - Use PageUp/PageDown keys for reliable scrolling
    - Scroll backward to load older messages, forward for newer messages
    - Ensure all messages in your date range are scrolled into view before extraction
