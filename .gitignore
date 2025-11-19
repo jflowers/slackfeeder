@@ -37,6 +37,7 @@ config/config.json
 config/channels.json
 config/people.json
 slack_exports/
+browser_exports/
 token.json
 .env
 

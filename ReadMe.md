@@ -317,6 +317,165 @@ python src/main.py --export-history --upload-to-drive
 2025-11-05 10:29:34 - INFO - Shared folder 'Carol Burnett, Betty White' with 3 participants
 ```
 
+## Browser-Based DM Export (No Slack App Required)
+
+**Note:** This feature is experimental and requires manual browser setup. It cannot run in CI/CD pipelines but provides an alternative way to export DMs without creating a Slack app.
+
+### Overview
+
+The browser-based export method allows you to export Slack DMs by:
+1. Opening Slack in a browser (already logged in)
+2. Using chrome-devtools MCP server to capture network requests
+3. Processing captured API responses into export files
+
+This method doesn't require a Slack bot token or app setup - it uses your existing browser session.
+
+### Prerequisites
+
+- Chrome or Chromium browser with DevTools Protocol access
+- chrome-devtools MCP server configured (for automated capture)
+- OR manual capture of API responses (see below)
+
+### Method 1: Automated Capture (with chrome-devtools MCP)
+
+If you have chrome-devtools MCP server configured:
+
+1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export
+2. **Select the browser page** in chrome-devtools MCP (if needed)
+3. **Run the capture script** - The script will automatically scroll through the conversation and capture API responses:
+   ```bash
+   python scripts/browser_export_dm.py --capture-only --response-dir browser_exports/api_responses --scroll-attempts 50
+   ```
+   
+   **No manual scrolling required!** The script uses JavaScript to programmatically scroll the page.
+   If JavaScript scrolling doesn't work, you can use keyboard scrolling with `--use-keyboard-scroll`.
+   
+   Or use Cursor's MCP tools directly (see below)
+4. **Process and upload to Google Drive**:
+   ```bash
+   python src/main.py --browser-export-dm --upload-to-drive \
+     --browser-response-dir browser_exports/api_responses \
+     --browser-conversation-name "Tara"
+   ```
+   Or process locally without Google Drive:
+   ```bash
+   python src/main.py --browser-export-dm \
+     --browser-response-dir browser_exports/api_responses \
+     --browser-output-dir slack_exports \
+     --browser-conversation-name "Tara"
+   ```
+
+### Method 2: Manual Capture (without MCP)
+
+If you don't have MCP server access, you can manually capture API responses:
+
+1. **Open Slack DM in browser** - Navigate to the DM conversation
+2. **Open browser DevTools** - Press F12 or right-click → Inspect
+3. **Go to Network tab** - Filter for "conversations.history"
+4. **Scroll through conversation** - As you scroll up, Slack makes API calls
+5. **Save API responses**:
+   - Right-click on each `conversations.history` request
+   - Select "Copy" → "Copy response"
+   - Save to `browser_exports/api_responses/response_0.json`, `response_1.json`, etc.
+6. **Process captured responses**:
+   ```bash
+   python src/main.py --browser-export-dm --browser-response-dir browser_exports/api_responses --browser-output-dir slack_exports --browser-conversation-name "Tara"
+   ```
+
+### Command-Line Options
+
+```bash
+python src/main.py --browser-export-dm [OPTIONS]
+```
+
+**Options:**
+- `--browser-response-dir DIR` - Directory containing captured API responses (default: `browser_exports/api_responses`)
+- `--browser-output-dir DIR` - Directory to write export files when not using `--upload-to-drive` (default: `slack_exports`)
+- `--browser-conversation-name NAME` - Name for the conversation (used in filenames and folder name, default: `DM`)
+- `--browser-conversation-id ID` - Optional conversation ID for metadata
+- `--start-date DATE` - Filter messages from this date (YYYY-MM-DD format, optional)
+- `--end-date DATE` - Filter messages until this date (YYYY-MM-DD format, optional)
+- `--upload-to-drive` - Upload to Google Drive as Google Docs (same format as Slack App export)
+
+**Date Range Filtering:**
+You can filter messages by date range when processing captured responses:
+```bash
+# Export only messages from October 2024
+python src/main.py --browser-export-dm \
+  --browser-response-dir browser_exports/api_responses \
+  --browser-conversation-name "Tara" \
+  --start-date "2024-10-01" \
+  --end-date "2024-10-31"
+```
+
+The date filtering happens **after** capture, so you can capture all messages once and then filter them multiple times with different date ranges.
+
+**Google Drive Integration:**
+When using `--upload-to-drive`, the browser export:
+- Creates Google Docs with the same naming convention: `{conversation_name} slack messages {yyyymmdd}`
+- Uses the same format as Slack App export (thread grouping, timestamps, etc.)
+- Creates folders named with the conversation name
+- Supports incremental updates (appends to existing docs)
+- Saves export metadata for future incremental exports
+- Requires `GOOGLE_DRIVE_CREDENTIALS_FILE` environment variable
+
+### Output Format
+
+**Local Files (without `--upload-to-drive`):**
+Export files are created with format: `YYYY-MM-DD-{conversation_name}.txt`
+
+Example: `2024-10-18-Tara.txt`
+
+Each file contains messages from that date, formatted with:
+- User names and timestamps
+- Message text
+- Reactions, attachments, and files
+- Date headers
+
+**Google Drive (with `--upload-to-drive`):**
+Google Docs are created with format: `{conversation_name} slack messages {yyyymmdd}`
+
+Example: `Tara slack messages 20241018`
+
+Each Google Doc contains:
+- Metadata header (for new docs): Channel name, export date, message count
+- Messages formatted exactly like Slack App export:
+  - Thread grouping
+  - Timestamps in format: `[YYYY-MM-DD HH:MM:SS UTC]`
+  - User names (or IDs if not mapped)
+  - Thread replies with indentation
+- Same format as `--export-history --upload-to-drive` for consistency
+
+### Limitations
+
+- **Requires manual browser setup** - Cannot be automated in CI/CD
+- **DM only** - Currently supports DMs, not channels or group chats
+- **Automated scrolling** - Uses JavaScript to scroll programmatically (no manual scrolling needed)
+- **Session-dependent** - API tokens are session-specific and cannot be reused
+- **Rate limiting** - Must respect Slack's rate limits (automatic with automated scrolling)
+
+### Tips
+
+1. **Scroll in batches** - Scroll up, wait for API calls, capture them, then scroll more
+2. **Check `has_more` field** - If `has_more: false` in a response, you've reached the beginning
+3. **Deduplication** - The processor automatically deduplicates messages using timestamps
+4. **Incremental processing** - You can process responses multiple times as you capture more
+
+### Troubleshooting
+
+**No messages in response:**
+- Some API calls return empty `messages` arrays (they're checking for updates)
+- Only process responses that have actual messages
+
+**Missing messages:**
+- Make sure you're scrolling enough to trigger API calls
+- Check that responses have `has_more: true` if you expect more messages
+- Verify the `oldest` timestamp to see how far back you've gone
+
+**Duplicate messages:**
+- The processor uses timestamps for deduplication
+- If you see duplicates, check that timestamps are unique
+
 ## How it Works
 
 1. **`--make-ref-files`**:

@@ -1547,6 +1547,39 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable bulk export mode: overrides limits and automatically chunks large exports into monthly files.",
     )
+    parser.add_argument(
+        "--browser-export-dm",
+        action="store_true",
+        help="Export DM using browser-based scraping (requires chrome-devtools MCP and pre-positioned browser).",
+    )
+    parser.add_argument(
+        "--browser-response-dir",
+        type=str,
+        default="browser_exports/api_responses",
+        help="Directory containing captured API responses for browser export (default: browser_exports/api_responses).",
+    )
+    parser.add_argument(
+        "--browser-output-dir",
+        type=str,
+        default="slack_exports",
+        help="Directory to write browser export files (default: slack_exports).",
+    )
+    parser.add_argument(
+        "--browser-conversation-name",
+        type=str,
+        default="DM",
+        help="Name of the conversation for browser export filename (default: DM).",
+    )
+    parser.add_argument(
+        "--browser-conversation-id",
+        type=str,
+        help="Optional conversation ID for browser export metadata.",
+    )
+    parser.add_argument(
+        "--use-dom-extraction",
+        action="store_true",
+        help="Extract messages directly from DOM instead of API responses (requires active browser session).",
+    )
 
     args = parser.parse_args()
 
@@ -1597,6 +1630,279 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Failed to set up authentication: {e}", exc_info=True)
             sys.exit(1)
+    elif args.browser_export_dm:
+        # Handle browser-based DM export
+        from pathlib import Path
+        from datetime import datetime, timezone
+        from src.browser_response_processor import BrowserResponseProcessor
+        from src.browser_scraper import extract_messages_from_dom
+
+        response_dir = Path(args.browser_response_dir)
+        output_dir = Path(args.browser_output_dir)
+        conversation_name = args.browser_conversation_name
+
+        logger.info("Browser-based DM export mode")
+        logger.info(f"Response directory: {response_dir}")
+        logger.info(f"Output directory: {output_dir}")
+        logger.info(f"Conversation name: {conversation_name}")
+
+        processor = BrowserResponseProcessor()
+        response_files = []
+        
+        # Check if using DOM extraction
+        if args.use_dom_extraction:
+            logger.info("Using DOM extraction mode")
+            try:
+                # Import MCP tools - these should be available when running via Cursor
+                # For now, we'll need to pass them in or use a wrapper
+                logger.warning("DOM extraction requires MCP chrome-devtools tools")
+                logger.info("Attempting DOM extraction...")
+                
+                # Try to use MCP tools if available
+                # Note: In practice, this would be called with actual MCP tool functions
+                # For now, we'll create a wrapper that can be called externally
+                logger.info("DOM extraction must be called with MCP tools. Creating extraction script...")
+                
+                # Save DOM extraction result to a temporary response file
+                response_dir.mkdir(parents=True, exist_ok=True)
+                dom_response_file = response_dir / "response_dom_extraction.json"
+                
+                logger.info("Please run DOM extraction separately and save result to response_dom_extraction.json")
+                logger.info("Or use the extract_messages_from_dom function with MCP tools")
+                
+                # Check if DOM extraction file exists
+                if dom_response_file.exists():
+                    logger.info(f"Found DOM extraction file: {dom_response_file}")
+                    response_files = [dom_response_file]
+                else:
+                    logger.error("DOM extraction file not found. Please extract messages first.")
+                    logger.info("You can use: from src.browser_scraper import extract_messages_from_dom")
+                    logger.info("Then call: extract_messages_from_dom(mcp_evaluate_script)")
+                    sys.exit(1)
+            except Exception as e:
+                logger.error(f"DOM extraction failed: {e}", exc_info=True)
+                sys.exit(1)
+        else:
+            # Use API response files
+            if not response_dir.exists():
+                logger.error(f"Response directory does not exist: {response_dir}")
+                logger.info("Please capture API responses first or specify a valid --browser-response-dir")
+                logger.info("Or use --use-dom-extraction to extract from DOM")
+                sys.exit(1)
+
+            # Sort files numerically by the number in the filename (response_0.json, response_1.json, etc.)
+            # This handles cases where there are 10+ files correctly
+            def extract_number(path: Path) -> int:
+                """Extract number from filename like 'response_42.json' -> 42"""
+                try:
+                    name = path.stem  # 'response_42'
+                    number_str = name.split('_', 1)[1] if '_' in name else '0'
+                    return int(number_str)
+                except (ValueError, IndexError):
+                    # Fallback to file modification time if filename parsing fails
+                    return int(path.stat().st_mtime)
+            
+            response_files = sorted(response_dir.glob("response_*.json"), key=extract_number)
+
+            if not response_files:
+                logger.error(f"No response files found in {response_dir}")
+                logger.info("Please capture API responses first. See ReadMe.md for instructions.")
+                logger.info("Or use --use-dom-extraction to extract from DOM")
+                sys.exit(1)
+
+        # Parse date range if provided
+        oldest_ts = None
+        latest_ts = None
+        if args.start_date:
+            oldest_ts = convert_date_to_timestamp(args.start_date)
+            if oldest_ts is None:
+                logger.error(f"Invalid start date format: {args.start_date}")
+                sys.exit(1)
+            logger.info(f"Filtering messages from: {args.start_date} ({oldest_ts})")
+
+        if args.end_date:
+            latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
+            if latest_ts is None:
+                logger.error(f"Invalid end date format: {args.end_date}")
+                sys.exit(1)
+            logger.info(f"Filtering messages until: {args.end_date} ({latest_ts})")
+
+        # Validate date range logic
+        if oldest_ts and latest_ts:
+            if float(oldest_ts) > float(latest_ts):
+                logger.error(
+                    f"Start date ({args.start_date}) must be before end date ({args.end_date})"
+                )
+                sys.exit(1)
+
+        # Check if uploading to Google Drive
+        if args.upload_to_drive:
+            # Validate Google Drive setup
+            google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+            if not google_drive_credentials_file:
+                logger.error(
+                    "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
+                )
+                sys.exit(1)
+
+            try:
+                google_drive_credentials_file = os.path.abspath(
+                    os.path.expanduser(google_drive_credentials_file)
+                )
+                if not os.path.exists(google_drive_credentials_file):
+                    logger.error(
+                        f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
+                    )
+                    sys.exit(1)
+            except (OSError, ValueError) as e:
+                logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
+                sys.exit(1)
+
+            google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
+
+            # Initialize Google Drive client
+            google_drive_client = GoogleDriveClient(google_drive_credentials_file)
+
+            # Process responses for Google Drive
+            logger.info(f"Processing {len(response_files)} response files for Google Drive upload")
+            daily_groups, user_map = processor.process_responses_for_google_drive(
+                response_files, conversation_name, oldest_ts=oldest_ts, latest_ts=latest_ts
+            )
+
+            if not daily_groups:
+                logger.warning("No messages found to upload")
+                sys.exit(1)
+
+            # Sanitize conversation name for folder
+            sanitized_folder_name = sanitize_folder_name(conversation_name)
+
+            # Create or get folder
+            folder_id = google_drive_client.create_folder(
+                sanitized_folder_name, google_drive_folder_id
+            )
+            if not folder_id:
+                logger.error(f"Failed to create/get folder for {conversation_name}")
+                sys.exit(1)
+
+            logger.info(f"Using folder: {sanitized_folder_name} ({folder_id})")
+
+            # Process each day and create/update Google Docs
+            stats = {
+                "processed": 0,
+                "uploaded": 0,
+                "upload_failed": 0,
+                "total_messages": 0,
+            }
+
+            for date_key in sorted(daily_groups.keys()):
+                daily_messages = daily_groups[date_key]
+                logger.info(
+                    f"Processing {len(daily_messages)} messages for date {date_key}"
+                )
+
+                # Process messages for this day (format like main export)
+                processed_messages = processor.preprocess_messages_for_google_doc(
+                    daily_messages, user_map
+                )
+
+                if not processed_messages or not processed_messages.strip():
+                    logger.warning(
+                        f"No processable content found for {date_key} of {conversation_name}. Skipping."
+                    )
+                    continue
+
+                # Create doc name: conversation name slack messages yyyymmdd
+                doc_name_base = f"{conversation_name} slack messages {date_key}"
+                doc_name = sanitize_folder_name(doc_name_base)
+
+                # Check if doc already exists
+                escaped_doc_name = google_drive_client._escape_drive_query_string(doc_name)
+                escaped_folder_id = google_drive_client._escape_drive_query_string(folder_id)
+                query = (
+                    f"name='{escaped_doc_name}' and '{escaped_folder_id}' in parents "
+                    f"and mimeType='application/vnd.google-apps.document' and trashed=false"
+                )
+
+                doc_exists = False
+                try:
+                    google_drive_client._rate_limit()
+                    results = (
+                        google_drive_client.service.files()
+                        .list(q=query, fields="files(id, name)", pageSize=1)
+                        .execute()
+                    )
+                    if results.get("files"):
+                        doc_exists = True
+                except Exception as e:
+                    logger.debug(
+                        f"Error checking for existing doc '{doc_name}': {e}, assuming new doc"
+                    )
+
+                # Prepare content: add header only for new docs
+                if doc_exists:
+                    # Append separator and messages (no header for existing docs)
+                    content_to_add = f"\n\n{'='*80}\n\n{processed_messages}"
+                else:
+                    # Add full header for new docs
+                    export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
+                    date_display = date_obj.strftime("%Y-%m-%d")
+                    metadata_header = f"""Slack Conversation Export
+Channel: {conversation_name}
+Channel ID: {"[Browser Export - No ID]"}
+Export Date: {export_date}
+Date: {date_display}
+Total Messages: {len(daily_messages)}
+
+{'='*80}
+
+"""
+                    content_to_add = metadata_header + processed_messages
+
+                # Create or update Google Doc
+                doc_id = google_drive_client.create_or_update_google_doc(
+                    doc_name, content_to_add, folder_id, overwrite=False
+                )
+
+                if not doc_id:
+                    logger.error(f"Failed to create Google Doc for {date_key} of {conversation_name}")
+                    stats["upload_failed"] += 1
+                else:
+                    stats["uploaded"] += 1
+                    stats["processed"] += 1
+                    stats["total_messages"] += len(daily_messages)
+                    logger.info(f"Created/updated Google Doc for {date_key}")
+
+            # Save export metadata
+            if daily_groups:
+                # Get latest timestamp from all messages
+                all_messages_flat = []
+                for messages in daily_groups.values():
+                    all_messages_flat.extend(messages)
+                if all_messages_flat:
+                    latest_message_ts = max(float(msg.get("ts", 0)) for msg in all_messages_flat)
+                    safe_conversation_name = sanitize_filename(conversation_name)
+                    google_drive_client.save_export_metadata(
+                        folder_id, safe_conversation_name, str(latest_message_ts)
+                    )
+                    logger.info(f"Saved export metadata for {conversation_name}")
+
+            # Log statistics
+            logger.info("=" * 80)
+            logger.info("Export Statistics:")
+            logger.info(f"  Processed: {stats['processed']}")
+            logger.info(f"  Uploaded to Drive: {stats['uploaded']}")
+            logger.info(f"  Upload Failed: {stats['upload_failed']}")
+            logger.info(f"  Total messages processed: {stats['total_messages']}")
+            logger.info("=" * 80)
+
+        else:
+            # Local file export (existing behavior)
+            logger.info(f"Processing {len(response_files)} response files")
+            total_messages, date_counts = processor.process_responses(
+                response_files, output_dir, conversation_name, oldest_ts=oldest_ts, latest_ts=latest_ts
+            )
+            logger.info(f"Export complete: {total_messages} messages across {len(date_counts)} dates")
     elif not any([args.make_ref_files, args.export_history, args.upload_to_drive]):
         parser.print_help()
     else:
