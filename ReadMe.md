@@ -388,9 +388,25 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
 **Before starting:** Ensure Chrome is running with remote debugging (see Setup above) and the chrome-devtools MCP server is configured in Cursor.
 
 1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export in the Chrome window you started with remote debugging
-2. **Extract messages from DOM** - Use MCP chrome-devtools tools to run automated DOM extraction:
+
+2. **Extract messages from DOM** - This step can be done in two ways:
+
+   **Option A: Ask Cursor Agent to extract (Recommended)**
+   
+   Simply ask the Cursor Agent (me) to extract messages from the DOM. I have access to MCP chrome-devtools tools and can run the extraction automatically. For example:
+   
+   > "Please extract messages from the DOM for Tara from Nov 1st to Nov 18th"
+   
+   I will automatically:
+   - Scroll through the conversation using PageDown keys
+   - Extract messages as they become visible
+   - Save them to `browser_exports/response_dom_extraction.json`
+   - Handle date filtering if you specify a date range
+   
+   **Option B: Run extraction script manually**
+   
+   If you prefer to run it yourself, you can use the helper script:
    ```python
-   # Use the helper script with automated scrolling (default)
    from scripts.extract_dom_messages import extract_and_save_dom_messages
    from pathlib import Path
    
@@ -402,8 +418,6 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
        end_date="2025-11-18"     # Optional
    )
    ```
-   
-   The script automatically scrolls through the conversation, extracts messages as they become visible, and saves them to `browser_exports/response_dom_extraction.json`.
    
    **Note:** Automated scrolling handles the scrolling for you - Slack uses virtual scrolling/lazy loading, so messages must be scrolled into view before they're rendered in the DOM. The script automatically presses PageDown keys to load messages and extracts them as they become visible.
 
