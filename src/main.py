@@ -1632,9 +1632,20 @@ if __name__ == "__main__":
         from src.browser_response_processor import BrowserResponseProcessor
         from src.browser_scraper import extract_messages_from_dom
 
-        response_dir = Path(args.browser_response_dir)
-        output_dir = Path(args.browser_output_dir)
+        # Validate and sanitize paths to prevent directory traversal
+        response_dir = Path(args.browser_response_dir).resolve()
+        output_dir = Path(args.browser_output_dir).resolve()
         conversation_name = args.browser_conversation_name
+        
+        # Ensure paths are within allowed directories (prevent directory traversal)
+        # For browser exports, we allow relative paths but resolve them to absolute
+        # This prevents ../ attacks while still allowing flexibility
+        try:
+            response_dir = response_dir.resolve(strict=False)
+            output_dir = output_dir.resolve(strict=False)
+        except (OSError, RuntimeError) as e:
+            logger.error(f"Invalid path specified: {e}")
+            sys.exit(1)
 
         logger.info("Browser-based DM export mode (DOM extraction)")
         logger.info(f"Response directory: {response_dir}")

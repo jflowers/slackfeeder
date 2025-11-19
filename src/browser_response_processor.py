@@ -11,11 +11,15 @@ import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from src.utils import format_timestamp, sanitize_filename, sanitize_folder_name, setup_logging
 
 logger = setup_logging()
+
+# Constants
+MIN_USER_ID_LENGTH = 9  # Minimum length for a valid Slack user ID (U + 8+ chars)
+USER_ID_PREFIX = "U"  # Slack user ID prefix
 
 
 class BrowserResponseProcessor:
@@ -52,8 +56,8 @@ class BrowserResponseProcessor:
             if not user_id:
                 continue
             
-            # Check if this is a user ID (starts with U, length > 8) or a display name
-            if user_id.startswith("U") and len(user_id) > 8:
+            # Check if this is a user ID (starts with U, length >= MIN_USER_ID_LENGTH) or a display name
+            if user_id.startswith(USER_ID_PREFIX) and len(user_id) >= MIN_USER_ID_LENGTH:
                 # It's a user ID - use it as key, keep existing mapping or use ID as fallback
                 if user_id not in user_map:
                     user_map[user_id] = self.user_map.get(user_id, user_id)
@@ -61,10 +65,9 @@ class BrowserResponseProcessor:
                 # It's likely a display name from DOM extraction
                 # Create a mapping from name to name (identity mapping)
                 # This preserves the display name we extracted
+                # For browser export, we'll use the display name as both key and value
+                # This allows the format_message functions to work correctly
                 if user_id not in user_map.values():
-                    # Use a synthetic key or the name itself
-                    # For browser export, we'll use the display name as both key and value
-                    # This allows the format_message functions to work correctly
                     user_map[user_id] = user_id
 
         # Update with any existing mappings
@@ -78,9 +81,43 @@ class BrowserResponseProcessor:
             ts: Slack timestamp string (e.g., "1729263032.513419")
 
         Returns:
-            datetime object
+            datetime object in UTC timezone
+
+        Raises:
+            ValueError: If timestamp format is invalid
+            TypeError: If timestamp is not a string or number
         """
-        return datetime.fromtimestamp(float(ts))
+        if not ts:
+            raise ValueError("Timestamp cannot be empty")
+        
+        try:
+            ts_float = float(ts)
+            # Validate timestamp is reasonable (between 2000 and 2100)
+            if ts_float < 946684800 or ts_float > 4102444800:
+                raise ValueError(f"Timestamp out of reasonable range: {ts}")
+            return datetime.fromtimestamp(ts_float, tz=timezone.utc)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid timestamp format: {ts}") from e
+
+    def _get_user_name(self, user_id: str, user_map: Dict[str, str]) -> str:
+        """Get user display name from user ID or display name.
+
+        Args:
+            user_id: User ID (starts with U) or display name from DOM extraction
+            user_map: Mapping of user IDs to display names
+
+        Returns:
+            Display name, or "Unknown User" if user_id is empty
+        """
+        if not user_id:
+            return "Unknown User"
+        
+        if user_id.startswith(USER_ID_PREFIX) and len(user_id) >= MIN_USER_ID_LENGTH:
+            # Likely a user ID, look it up
+            return user_map.get(user_id, user_id)
+        else:
+            # Likely a display name from DOM extraction, use it directly
+            return user_id
 
     def replace_user_ids_in_text(
         self, text: str, user_map: Dict[str, str]
@@ -104,9 +141,18 @@ class BrowserResponseProcessor:
         import re
 
         # Pattern to match Slack user mentions: <@U...> or @U...
+        # User IDs start with U and are followed by alphanumeric characters
         pattern = r"<@(U[A-Z0-9]+)>|@(U[A-Z0-9]+)"
 
         def replace_match(match: re.Match) -> str:
+            """Replace a user mention with display name if available.
+            
+            Args:
+                match: Regex match object containing user ID
+                
+            Returns:
+                Replaced text with display name, or original if not found
+            """
             # Extract user ID from either capture group
             user_id = match.group(1) or match.group(2)
             if not user_id:
@@ -124,11 +170,14 @@ class BrowserResponseProcessor:
     def format_message_text(self, message: Dict[str, Any]) -> str:
         """Extract and format message text, handling blocks and rich text.
 
+        Extracts text from message dictionary, handling both plain text
+        and rich text blocks format used by Slack.
+
         Args:
-            message: Message dictionary
+            message: Message dictionary containing 'text' or 'blocks'
 
         Returns:
-            Formatted message text
+            Formatted message text as string, empty string if no text found
         """
         text = message.get("text", "")
 
@@ -155,25 +204,22 @@ class BrowserResponseProcessor:
     ) -> str:
         """Format a single message for export output (markdown format for local files).
 
+        Formats a message with user name, timestamp, text, reactions, files,
+        and attachments in a human-readable markdown format.
+
         Args:
-            message: Message dictionary
+            message: Message dictionary containing ts, user, text, etc.
             user_map: Mapping of user IDs to display names
 
         Returns:
-            Formatted message string
+            Formatted message string with markdown formatting
         """
         ts = message.get("ts", "")
         user_id = message.get("user", "")
         text = self.format_message_text(message)
 
         # Get user name (match main export: "Unknown User" if no user_id)
-        user_name = "Unknown User"
-        if user_id:
-            if user_id.startswith("U") and len(user_id) > 8:
-                user_name = user_map.get(user_id, user_id)
-            else:
-                # Display name from DOM extraction
-                user_name = user_id
+        user_name = self._get_user_name(user_id, user_map)
 
         # Parse timestamp
         try:
@@ -221,8 +267,11 @@ class BrowserResponseProcessor:
     ) -> Tuple[str, str]:
         """Format a message for Google Doc export (matches main export format).
 
+        Formats message in the same style as main export: [timestamp] name: text
+        Handles files and multi-line text with proper indentation.
+
         Args:
-            message: Message dictionary
+            message: Message dictionary containing ts, user, text, files, etc.
             user_map: Mapping of user IDs to display names
 
         Returns:
@@ -234,13 +283,7 @@ class BrowserResponseProcessor:
         files = message.get("files", [])
 
         # Get user name (match main export: "Unknown User" if no user_id)
-        user_name = "Unknown User"
-        if user_id:
-            if user_id.startswith("U") and len(user_id) > 8:
-                user_name = user_map.get(user_id, user_id)
-            else:
-                # Display name from DOM extraction
-                user_name = user_id
+        user_name = self._get_user_name(user_id, user_map)
 
         # Format timestamp like main export
         formatted_time = format_timestamp(ts)
@@ -277,9 +320,13 @@ class BrowserResponseProcessor:
             ts = msg.get("ts", "")
             try:
                 dt = self.parse_timestamp(ts)
+                # Ensure UTC timezone for consistent date grouping
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 date_key = dt.strftime("%Y-%m-%d")
                 grouped[date_key].append(msg)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid timestamp {ts}, grouping as 'unknown': {e}")
                 grouped["unknown"].append(msg)
 
         # Sort messages within each date by timestamp
@@ -330,14 +377,7 @@ class BrowserResponseProcessor:
             user_id = message.get("user", "")
             # Handle both user IDs and display names in user_map
             # Match main export behavior: use "Unknown User" if no user_id, otherwise look up
-            name = "Unknown User"
-            if user_id:
-                if user_id.startswith("U") and len(user_id) > 8:
-                    # Likely a user ID, look it up
-                    name = user_map.get(user_id, user_id)
-                else:
-                    # Likely a display name from DOM extraction, use it directly
-                    name = user_id
+            name = self._get_user_name(user_id, user_map)
 
             text = text.replace("\n", "\n    ")
 
@@ -393,7 +433,7 @@ class BrowserResponseProcessor:
                 logger.warning(f"Response file does not exist: {response_file}")
                 continue
 
-            logger.info(f"Processing {response_file.name}...")
+            logger.info(f"Processing {sanitize_filename(response_file.name)}...")
             try:
                 with open(response_file, "r", encoding="utf-8") as f:
                     response_data = json.load(f)
@@ -439,13 +479,17 @@ class BrowserResponseProcessor:
         self.user_map.update(self.discover_user_ids(all_messages))
         logger.info(f"Discovered user IDs: {self.user_map}")
 
-        # Deduplicate messages by timestamp
+        # Deduplicate messages by timestamp (optimized single pass)
         unique_messages = {}
+        seen_ts = set(self.processed_message_ids)  # Start with already processed IDs
         for msg in all_messages:
             msg_id = msg.get("ts")
-            if msg_id and msg_id not in self.processed_message_ids:
+            if msg_id and msg_id not in seen_ts:
                 unique_messages[msg_id] = msg
-                self.processed_message_ids.add(msg_id)
+                seen_ts.add(msg_id)
+        
+        # Update processed_message_ids for future calls
+        self.processed_message_ids.update(seen_ts)
 
         logger.info(f"Found {len(unique_messages)} unique messages (from {len(all_messages)} total)")
 
@@ -479,12 +523,18 @@ class BrowserResponseProcessor:
     ) -> int:
         """Write messages to a file, appending to existing content if present.
 
+        Uses atomic write pattern to prevent race conditions.
+
         Args:
             messages: List of message dictionaries for a single date
             filepath: Path to output file
 
         Returns:
             Number of messages written
+
+        Raises:
+            OSError: If file cannot be written
+            PermissionError: If file permissions prevent writing
         """
         # Sort messages by timestamp
         messages.sort(key=lambda x: float(x.get("ts", "0")))
@@ -514,15 +564,44 @@ class BrowserResponseProcessor:
 
             except Exception as e:
                 logger.error(f"Error processing message {ts}: {e}")
-                output_lines.append(f"**Error processing message**\n{json.dumps(msg, indent=2)}\n\n")
+                # Sanitize message data before logging to prevent JSON injection
+                safe_msg = {
+                    "ts": msg.get("ts", "[invalid]"),
+                    "user": msg.get("user", "[unknown]"),
+                    "text": msg.get("text", "")[:100] + "..." if len(msg.get("text", "")) > 100 else msg.get("text", "")
+                }
+                output_lines.append(f"**Error processing message**\n{json.dumps(safe_msg, indent=2)}\n\n")
 
-        # Write to file (append if exists)
-        content = "\n".join(output_lines)
-        if filepath.exists():
-            existing = filepath.read_text()
-            content = existing + "\n" + content
-
-        filepath.write_text(content, encoding="utf-8")
+        # Build content
+        new_content = "\n".join(output_lines)
+        
+        # Atomic write: write to temp file first, then rename
+        temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
+        try:
+            # Read existing content if file exists
+            if filepath.exists():
+                try:
+                    existing = filepath.read_text(encoding="utf-8")
+                    new_content = existing + "\n" + new_content
+                except (OSError, IOError) as e:
+                    logger.warning(f"Could not read existing file {filepath}, writing new content: {e}")
+            
+            # Write to temp file
+            temp_filepath.write_text(new_content, encoding="utf-8")
+            
+            # Atomic rename (works on Unix and Windows)
+            temp_filepath.replace(filepath)
+            
+        except (OSError, IOError, PermissionError) as e:
+            # Clean up temp file on error
+            if temp_filepath.exists():
+                try:
+                    temp_filepath.unlink()
+                except Exception:
+                    pass
+            logger.error(f"Failed to write messages to {sanitize_filename(filepath.name)}: {e}")
+            raise
+        
         return len(messages)
 
     def process_responses_for_google_drive(
@@ -552,7 +631,7 @@ class BrowserResponseProcessor:
                 logger.warning(f"Response file does not exist: {response_file}")
                 continue
 
-            logger.info(f"Processing {response_file.name}...")
+            logger.info(f"Processing {sanitize_filename(response_file.name)}...")
             try:
                 with open(response_file, "r", encoding="utf-8") as f:
                     response_data = json.load(f)
@@ -598,13 +677,17 @@ class BrowserResponseProcessor:
         self.user_map.update(self.discover_user_ids(all_messages))
         logger.info(f"Discovered user IDs: {self.user_map}")
 
-        # Deduplicate messages by timestamp
+        # Deduplicate messages by timestamp (optimized single pass)
         unique_messages = {}
+        seen_ts = set(self.processed_message_ids)  # Start with already processed IDs
         for msg in all_messages:
             msg_id = msg.get("ts")
-            if msg_id and msg_id not in self.processed_message_ids:
+            if msg_id and msg_id not in seen_ts:
                 unique_messages[msg_id] = msg
-                self.processed_message_ids.add(msg_id)
+                seen_ts.add(msg_id)
+        
+        # Update processed_message_ids for future calls
+        self.processed_message_ids.update(seen_ts)
 
         logger.info(f"Found {len(unique_messages)} unique messages (from {len(all_messages)} total)")
 
@@ -614,12 +697,15 @@ class BrowserResponseProcessor:
             ts = msg.get("ts", "")
             try:
                 dt = self.parse_timestamp(ts)
-                dt_utc = dt.replace(tzinfo=timezone.utc)
-                date_key = dt_utc.strftime("%Y%m%d")  # YYYYMMDD format
+                # parse_timestamp already returns UTC, but ensure it's set
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                date_key = dt.strftime("%Y%m%d")  # YYYYMMDD format
                 if date_key not in daily_groups:
                     daily_groups[date_key] = []
                 daily_groups[date_key].append(msg)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid timestamp {ts}, skipping message: {e}")
                 continue
 
         # Sort messages within each day by timestamp

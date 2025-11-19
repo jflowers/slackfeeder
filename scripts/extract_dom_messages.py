@@ -18,10 +18,11 @@ Usage:
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -41,8 +42,8 @@ MAX_SCROLL_ATTEMPTS = 100  # Maximum scroll attempts before stopping
 
 def extract_and_save_dom_messages(
     output_file: Path,
-    mcp_evaluate_script,
-    mcp_press_key,
+    mcp_evaluate_script: Callable,
+    mcp_press_key: Callable,
     append: bool = False,
     auto_scroll: bool = True,
     start_date: Optional[str] = None,
@@ -55,8 +56,8 @@ def extract_and_save_dom_messages(
 
     Args:
         output_file: Path to save extracted messages
-        mcp_evaluate_script: MCP function to evaluate JavaScript
-        mcp_press_key: MCP function to press keys (required for scrolling)
+        mcp_evaluate_script: MCP function to evaluate JavaScript (must be callable)
+        mcp_press_key: MCP function to press keys (required for scrolling, must be callable)
         append: If True, append to existing file; if False, overwrite
         auto_scroll: If True, automatically scroll through conversation (default: True)
         start_date: Optional start date filter (YYYY-MM-DD format)
@@ -64,9 +65,16 @@ def extract_and_save_dom_messages(
 
     Returns:
         Dictionary with extraction results
+
+    Raises:
+        ValueError: If mcp_press_key or mcp_evaluate_script are not callable
+        OSError: If file cannot be written
+        PermissionError: If file permissions prevent writing
     """
-    if not mcp_press_key:
-        raise ValueError("mcp_press_key is required for automated scrolling")
+    if not callable(mcp_press_key):
+        raise ValueError("mcp_press_key must be callable")
+    if not callable(mcp_evaluate_script):
+        raise ValueError("mcp_evaluate_script must be callable")
     
     script = extract_messages_from_dom_script()
     
@@ -113,7 +121,8 @@ def extract_and_save_dom_messages(
                     new_messages = extracted_data.get("messages", [])
                     if new_messages:
                         # Check if we have any truly new messages
-                        existing_ts = {msg.get("ts") for msg in all_extracted_messages + existing_messages}
+                        # Optimize: avoid list concatenation by using set union
+                        existing_ts = {msg.get("ts") for msg in all_extracted_messages} | {msg.get("ts") for msg in existing_messages}
                         new_count = sum(1 for msg in new_messages if msg.get("ts") not in existing_ts)
                         
                         if new_count > 0:
@@ -166,7 +175,8 @@ def extract_and_save_dom_messages(
                 else:
                     final_messages = []
                 
-                existing_ts = {msg.get("ts") for msg in all_extracted_messages + existing_messages}
+                # Optimize: avoid list concatenation by using set union
+                existing_ts = {msg.get("ts") for msg in all_extracted_messages} | {msg.get("ts") for msg in existing_messages}
                 all_extracted_messages.extend(
                     msg for msg in final_messages if msg.get("ts") not in existing_ts
                 )
@@ -253,10 +263,26 @@ def extract_and_save_dom_messages(
         "has_more": False,
     }
     
-    # Save to file
+    # Save to file using atomic write pattern
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(combined_result, f, indent=2, ensure_ascii=False)
+    temp_file = output_file.with_suffix(output_file.suffix + ".tmp")
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(combined_result, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())  # Ensure data is written to disk
+        
+        # Atomic rename
+        temp_file.replace(output_file)
+    except (OSError, IOError, PermissionError) as e:
+        # Clean up temp file on error
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
+        logger.error(f"Failed to save extracted messages to {output_file}: {e}")
+        raise
     
     logger.info(
         f"Saved {len(unique_messages)} unique messages to {output_file}"
