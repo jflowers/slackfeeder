@@ -521,6 +521,57 @@ class GoogleDriveClient:
             logger.error(f"An error occurred while uploading file '{file_name}': {error}")
             return None
 
+    def _extract_message_timestamps_from_doc(self, doc_id: str) -> set:
+        """Extract message timestamps from an existing Google Doc.
+
+        Reads the document content and extracts Unix timestamps from formatted
+        message timestamps (e.g., "[2025-11-21 10:30:45 UTC]").
+
+        Args:
+            doc_id: Google Drive document ID
+
+        Returns:
+            Set of Unix timestamp strings found in the document
+        """
+        timestamps = set()
+        try:
+            self._rate_limit()
+            doc = self.docs_service.documents().get(documentId=doc_id).execute()
+            
+            # Extract text content from the document
+            content_parts = []
+            if "body" in doc and "content" in doc["body"]:
+                for element in doc["body"]["content"]:
+                    if "paragraph" in element:
+                        for para_element in element["paragraph"].get("elements", []):
+                            if "textRun" in para_element:
+                                content_parts.append(para_element["textRun"].get("content", ""))
+            
+            content = "".join(content_parts)
+            
+            # Pattern to match formatted timestamps: [YYYY-MM-DD HH:MM:SS UTC]
+            # This matches the format used by format_timestamp()
+            timestamp_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\]')
+            
+            for match in timestamp_pattern.finditer(content):
+                timestamp_str = match.group(1)
+                try:
+                    # Convert formatted timestamp back to Unix timestamp
+                    dt = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    dt = dt.replace(tzinfo=timezone.utc)
+                    unix_ts = str(dt.timestamp())
+                    timestamps.add(unix_ts)
+                except (ValueError, TypeError):
+                    # Skip invalid timestamps
+                    continue
+                    
+        except HttpError as error:
+            logger.warning(f"Error reading document content for timestamp extraction: {error}")
+        except Exception as e:
+            logger.debug(f"Error extracting timestamps from document: {e}")
+            
+        return timestamps
+
     def create_or_update_google_doc(
         self, doc_name: str, content: str, folder_id: str, overwrite: bool = False
     ) -> Optional[str]:
@@ -544,7 +595,7 @@ class GoogleDriveClient:
             logger.warning(f"Empty content provided for doc '{doc_name}', skipping")
             return None
 
-        # Check if document already exists
+        # Check if document already exists - get ALL matches, not just first
         escaped_doc_name = self._escape_drive_query_string(doc_name)
         escaped_folder_id = self._escape_drive_query_string(folder_id)
         query = (
@@ -553,13 +604,34 @@ class GoogleDriveClient:
         )
 
         existing_doc_id = None
+        existing_files = []
         try:
             self._rate_limit()
             results = (
-                self.service.files().list(q=query, fields="files(id, name)", pageSize=1).execute()
+                self.service.files()
+                .list(q=query, fields="files(id, name, modifiedTime)", pageSize=100)
+                .execute()
             )
             existing_files = results.get("files", [])
-            if existing_files:
+            
+            if len(existing_files) > 1:
+                # Multiple documents with same name - use most recently modified
+                logger.warning(
+                    f"Found {len(existing_files)} documents with name '{doc_name}'. "
+                    f"Using most recently modified document."
+                )
+                # Sort by modifiedTime descending, use the most recent
+                existing_files.sort(
+                    key=lambda x: x.get("modifiedTime", ""), reverse=True
+                )
+                existing_doc_id = existing_files[0]["id"]
+                # Log warning about duplicates
+                duplicate_ids = [f["id"] for f in existing_files[1:]]
+                logger.warning(
+                    f"Duplicate documents found (IDs: {', '.join(duplicate_ids)}). "
+                    f"Consider cleaning up duplicates manually."
+                )
+            elif existing_files:
                 existing_doc_id = existing_files[0]["id"]
         except HttpError as error:
             logger.warning(f"Error checking for existing doc '{doc_name}': {error}")
@@ -609,8 +681,81 @@ class GoogleDriveClient:
                     logger.error(f"Error replacing content in doc '{doc_name}': {error}")
                     return None
             else:
-                # Append content
+                # Append content - but first check for duplicates
                 try:
+                    # Extract timestamps from existing document
+                    existing_timestamps = self._extract_message_timestamps_from_doc(existing_doc_id)
+                    
+                    # Extract timestamps from content being appended
+                    # Pattern to match formatted timestamps: [YYYY-MM-DD HH:MM:SS UTC]
+                    timestamp_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\]')
+                    content_timestamps = set()
+                    for match in timestamp_pattern.finditer(content):
+                        timestamp_str = match.group(1)
+                        try:
+                            dt = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                            dt = dt.replace(tzinfo=timezone.utc)
+                            unix_ts = str(dt.timestamp())
+                            content_timestamps.add(unix_ts)
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # Filter out content lines that have timestamps already in the document
+                    if existing_timestamps and content_timestamps:
+                        # Find which timestamps are duplicates
+                        duplicate_timestamps = content_timestamps.intersection(existing_timestamps)
+                        
+                        if duplicate_timestamps:
+                            logger.info(
+                                f"Found {len(duplicate_timestamps)} duplicate message(s) in existing doc. "
+                                f"Filtering out duplicates before appending."
+                            )
+                            
+                            # Filter content by removing lines with duplicate timestamps
+                            filtered_lines = []
+                            current_message_lines = []
+                            current_has_duplicate = False
+                            
+                            for line in content.split('\n'):
+                                # Check if this line contains a timestamp
+                                match = timestamp_pattern.search(line)
+                                if match:
+                                    # Process previous message if any
+                                    if current_message_lines and not current_has_duplicate:
+                                        filtered_lines.extend(current_message_lines)
+                                    
+                                    # Start new message
+                                    timestamp_str = match.group(1)
+                                    try:
+                                        dt = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                                        dt = dt.replace(tzinfo=timezone.utc)
+                                        unix_ts = str(dt.timestamp())
+                                        current_has_duplicate = unix_ts in existing_timestamps
+                                    except (ValueError, TypeError):
+                                        current_has_duplicate = False
+                                    
+                                    current_message_lines = [line]
+                                else:
+                                    # Continuation of current message
+                                    if current_message_lines:
+                                        current_message_lines.append(line)
+                                    else:
+                                        # Line without timestamp (separator, etc.) - keep it
+                                        filtered_lines.append(line)
+                            
+                            # Process last message
+                            if current_message_lines and not current_has_duplicate:
+                                filtered_lines.extend(current_message_lines)
+                            
+                            content = '\n'.join(filtered_lines)
+                            
+                            if not content.strip():
+                                logger.info(
+                                    f"All messages in content are duplicates. "
+                                    f"Skipping append to '{doc_name}'"
+                                )
+                                return existing_doc_id
+                    
                     # Get current document to find end index
                     self._rate_limit()
                     doc = self.docs_service.documents().get(documentId=existing_doc_id).execute()

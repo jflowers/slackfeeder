@@ -1691,21 +1691,25 @@ if __name__ == "__main__":
 
         # Parse date range if provided
         # Determine oldest timestamp for incremental fetching
-        # If --start-date is explicitly provided, use it; otherwise check Google Drive for last export
+        # Always check Google Drive for last export when uploading to Drive,
+        # even if --start-date is explicitly provided (use the later of the two)
         oldest_ts = None
         google_drive_client = None  # Will be initialized if needed for incremental export
         sanitized_folder_name = None
         safe_conversation_name = None
         google_drive_folder_id = None
         
+        # Parse explicit start date if provided
+        explicit_start_ts = None
         if args.start_date:
-            oldest_ts = convert_date_to_timestamp(args.start_date)
-            if oldest_ts is None:
+            explicit_start_ts = convert_date_to_timestamp(args.start_date)
+            if explicit_start_ts is None:
                 logger.error(f"Invalid start date format: {args.start_date}")
                 sys.exit(1)
-            logger.info(f"Using explicit start date: {args.start_date} ({oldest_ts})")
-        elif args.upload_to_drive:
-            # Check Google Drive for last export timestamp (incremental export)
+            logger.info(f"Explicit start date provided: {args.start_date} ({explicit_start_ts})")
+        
+        # Check Google Drive for last export timestamp if uploading to Drive
+        if args.upload_to_drive:
             # Initialize Google Drive client early to check for metadata
             google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
             if not google_drive_credentials_file:
@@ -1741,21 +1745,52 @@ if __name__ == "__main__":
                     folder_id, safe_conversation_name
                 )
                 if last_export_ts:
-                    oldest_ts = last_export_ts
-                    last_export_dt = datetime.fromtimestamp(
-                        float(last_export_ts), tz=timezone.utc
-                    )
-                    logger.info(
-                        f"Fetching messages since last export: {last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-                    )
+                    # Use the later of explicit start date or last export timestamp
+                    if explicit_start_ts:
+                        oldest_ts = max(explicit_start_ts, last_export_ts)
+                        if oldest_ts == last_export_ts:
+                            last_export_dt = datetime.fromtimestamp(
+                                float(last_export_ts), tz=timezone.utc
+                            )
+                            logger.info(
+                                f"Last export ({last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}) "
+                                f"is later than explicit start date. Using last export timestamp."
+                            )
+                        else:
+                            logger.info(
+                                f"Explicit start date is later than last export. Using explicit start date."
+                            )
+                    else:
+                        oldest_ts = last_export_ts
+                        last_export_dt = datetime.fromtimestamp(
+                            float(last_export_ts), tz=timezone.utc
+                        )
+                        logger.info(
+                            f"Fetching messages since last export: {last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        )
                 else:
-                    logger.info("No previous export found in Drive, processing all messages")
+                    # No previous export found - use explicit start date if provided
+                    oldest_ts = explicit_start_ts
+                    if oldest_ts:
+                        logger.info("No previous export found in Drive, using explicit start date")
+                    else:
+                        logger.info("No previous export found in Drive, processing all messages")
             else:
-                logger.info("Could not access/create folder, processing all messages")
+                # Could not access/create folder - use explicit start date if provided
+                oldest_ts = explicit_start_ts
+                if oldest_ts:
+                    logger.info("Could not access/create folder, using explicit start date")
+                else:
+                    logger.info("Could not access/create folder, processing all messages")
         else:
-            logger.info(
-                "Not uploading to Drive, processing all messages (use --start-date for incremental export)"
-            )
+            # Not uploading to Drive - use explicit start date if provided
+            oldest_ts = explicit_start_ts
+            if oldest_ts:
+                logger.info(f"Not uploading to Drive, using explicit start date: {args.start_date}")
+            else:
+                logger.info(
+                    "Not uploading to Drive, processing all messages (use --start-date for incremental export)"
+                )
 
         latest_ts = None
         if args.end_date:
@@ -1852,7 +1887,7 @@ if __name__ == "__main__":
                 doc_name_base = f"{conversation_name} slack messages {date_key}"
                 doc_name = sanitize_folder_name(doc_name_base)
 
-                # Check if doc already exists
+                # Check if doc already exists - get ALL matches, not just first
                 escaped_doc_name = google_drive_client._escape_drive_query_string(doc_name)
                 escaped_folder_id = google_drive_client._escape_drive_query_string(folder_id)
                 query = (
@@ -1865,11 +1900,18 @@ if __name__ == "__main__":
                     google_drive_client._rate_limit()
                     results = (
                         google_drive_client.service.files()
-                        .list(q=query, fields="files(id, name)", pageSize=1)
+                        .list(q=query, fields="files(id, name, modifiedTime)", pageSize=100)
                         .execute()
                     )
-                    if results.get("files"):
+                    existing_files = results.get("files", [])
+                    if existing_files:
                         doc_exists = True
+                        if len(existing_files) > 1:
+                            # Multiple documents with same name - log warning
+                            logger.warning(
+                                f"Found {len(existing_files)} documents with name '{doc_name}'. "
+                                f"create_or_update_google_doc() will use the most recently modified."
+                            )
                 except Exception as e:
                     logger.debug(
                         f"Error checking for existing doc '{doc_name}': {e}, assuming new doc"
