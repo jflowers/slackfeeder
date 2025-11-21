@@ -76,6 +76,10 @@ python src/main.py --browser-export-dm --upload-to-drive \
   --end-date 2024-06-05
 ```
 
+**⚠️ CRITICAL: `--browser-conversation-name` is REQUIRED**
+
+You **must** specify `--browser-conversation-name` with the actual conversation name (e.g., `"Tara"`). The default "DM" is not allowed and will cause the script to fail. This ensures messages are organized in folders named after the actual conversation, matching the behavior of regular API exports.
+
 ## JavaScript Extraction Script
 
 The extraction script is located in `src/browser_scraper.py`:

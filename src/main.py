@@ -1568,7 +1568,7 @@ if __name__ == "__main__":
         "--browser-conversation-name",
         type=str,
         default="DM",
-        help="Name of the conversation for browser export filename (default: DM).",
+        help="Name of the conversation for browser export filename (REQUIRED: must specify actual conversation name, e.g., 'Tara').",
     )
     parser.add_argument(
         "--browser-conversation-id",
@@ -1636,6 +1636,21 @@ if __name__ == "__main__":
         response_dir = Path(args.browser_response_dir).resolve()
         output_dir = Path(args.browser_output_dir).resolve()
         conversation_name = args.browser_conversation_name
+        
+        # Require explicit conversation name - fail if still using default "DM"
+        # This ensures messages are organized in folders named after the actual conversation
+        if conversation_name == "DM":
+            logger.error(
+                "ERROR: --browser-conversation-name is required and must specify the actual conversation name."
+            )
+            logger.error(
+                "The default 'DM' is not allowed. Regular exports automatically detect conversation names, "
+                "but browser exports require explicit specification."
+            )
+            logger.error(
+                f"Example: --browser-conversation-name 'Tara'"
+            )
+            sys.exit(1)
         
         # Ensure paths are within allowed directories (prevent directory traversal)
         # For browser exports, we allow relative paths but resolve them to absolute

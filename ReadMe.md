@@ -451,7 +451,7 @@ python src/main.py --browser-export-dm [OPTIONS]
 **Options:**
 - `--browser-response-dir DIR` - Directory containing DOM extraction file (default: `browser_exports`)
 - `--browser-output-dir DIR` - Directory to write export files when not using `--upload-to-drive` (default: `slack_exports`)
-- `--browser-conversation-name NAME` - Name for the conversation (used in filenames and folder name, default: `DM`)
+- `--browser-conversation-name NAME` - **REQUIRED**: Name for the conversation (used in filenames and folder name). Must specify the actual conversation name (e.g., "Tara"). The default "DM" is not allowed and will cause the script to fail.
 - `--browser-conversation-id ID` - Optional conversation ID for metadata
 - `--start-date DATE` - Filter messages from this date (YYYY-MM-DD format, optional)
 - `--end-date DATE` - Filter messages until this date (YYYY-MM-DD format, optional)

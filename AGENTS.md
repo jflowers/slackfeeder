@@ -266,6 +266,10 @@ When extracting messages from Slack DOM using Cursor's MCP chrome-devtools tools
 
 **See `DOM_EXTRACTION_GUIDE.md` for complete workflow documentation.**
 
+**⚠️ IMPORTANT: Always specify `--browser-conversation-name`**
+
+When processing browser exports with `src/main.py --browser-export-dm`, **always specify `--browser-conversation-name`** with the actual conversation name (e.g., `--browser-conversation-name "Tara"`). The default "DM" is not allowed and will cause the script to fail. This ensures messages are organized in folders named after the actual conversation, matching the behavior of regular API exports.
+
 ## Common Pitfalls
 
 1. **Forgetting rate limits**: Always use rate limiting before API calls
@@ -274,6 +278,7 @@ When extracting messages from Slack DOM using Cursor's MCP chrome-devtools tools
 4. **State management**: Don't create local state files - use Drive metadata
 5. **Error handling**: Distinguish between `None` (API error) and `[]` (no messages)
 6. **Creating temporary scripts**: Do NOT create wrapper scripts for DOM extraction - use MCP tools directly
+7. **Missing conversation name**: Always specify `--browser-conversation-name` when using `--browser-export-dm`. The default "DM" will cause the script to fail.
 
 ## When Making Changes
 
