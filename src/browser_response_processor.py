@@ -74,6 +74,155 @@ class BrowserResponseProcessor:
         user_map.update(self.user_map)
         return user_map
 
+    def _filter_by_conversation_participants(
+        self, messages: List[Dict[str, Any]], conversation_name: str
+    ) -> List[Dict[str, Any]]:
+        """Filter messages to only include those from conversation participants.
+        
+        For browser exports, the extraction file may contain messages from multiple
+        conversations. This method filters messages to only include those from the
+        specified conversation by identifying participants.
+        
+        For DM conversations:
+        - The conversation_name should be one participant (e.g., "Emily Fox")
+        - We identify other participants by finding users who frequently appear
+          together with the conversation_name in messages
+        - Messages from users not in the participant set are excluded
+        
+        Args:
+            messages: List of all messages (may include multiple conversations)
+            conversation_name: Name of the conversation to filter for
+            
+        Returns:
+            Filtered list of messages from the specified conversation only
+        """
+        if not messages:
+            return []
+        
+        # Count message frequency by user
+        user_counts: Dict[str, int] = {}
+        for msg in messages:
+            user = msg.get("user", "unknown")
+            if user and user != "unknown":
+                user_counts[user] = user_counts.get(user, 0) + 1
+        
+        # Identify conversation participants
+        # The conversation_name should be one participant
+        participants = {conversation_name}
+        
+        # For DM conversations, find the other participant(s)
+        # Look for users who appear frequently together with the conversation_name
+        # We'll identify participants by finding users who appear in messages
+        # that are temporally close to messages from the conversation_name
+        
+        # First, find messages from the conversation_name
+        conversation_name_messages = [
+            msg for msg in messages
+            if msg.get("user") == conversation_name
+        ]
+        
+        if not conversation_name_messages:
+            # If no messages from conversation_name found, try case-insensitive match
+            conversation_name_lower = conversation_name.lower()
+            for msg in messages:
+                user = msg.get("user", "")
+                if user and user.lower() == conversation_name_lower:
+                    participants.add(user)
+                    conversation_name_messages.append(msg)
+                    break
+        
+        if not conversation_name_messages:
+            # If still no messages found, log warning and return all messages
+            # (better to include too many than exclude everything)
+            logger.warning(
+                f"No messages found from conversation participant '{conversation_name}'. "
+                f"Available users: {sorted(user_counts.keys())}. "
+                f"Not filtering by participants."
+            )
+            return messages
+        
+        # Identify other participants by finding users who appear frequently
+        # in messages temporally close to conversation_name messages
+        # For a DM, we expect exactly 2 participants (conversation_name + one other)
+        
+        # Get timestamps of conversation_name messages
+        conversation_timestamps = {
+            float(msg.get("ts", "0")) for msg in conversation_name_messages
+            if msg.get("ts")
+        }
+        
+        # Find users who appear in messages close to conversation_name messages
+        # Use a time window (e.g., within 1 hour) to identify related messages
+        TIME_WINDOW_SECONDS = 3600  # 1 hour
+        
+        candidate_participants: Dict[str, int] = {}
+        for msg in messages:
+            user = msg.get("user", "")
+            if not user or user == "unknown" or user == conversation_name:
+                continue
+            
+            msg_ts = msg.get("ts")
+            if not msg_ts:
+                continue
+            
+            try:
+                msg_ts_float = float(msg_ts)
+                # Check if this message is close to any conversation_name message
+                for conv_ts in conversation_timestamps:
+                    if abs(msg_ts_float - conv_ts) <= TIME_WINDOW_SECONDS:
+                        candidate_participants[user] = candidate_participants.get(user, 0) + 1
+                        break
+            except (ValueError, TypeError):
+                continue
+        
+        # Add the most frequent candidate(s) as participants
+        # For a DM, typically there's one other participant
+        if candidate_participants:
+            # Sort by frequency and add top candidates
+            # For DMs, we typically want the top 1-2 candidates
+            sorted_candidates = sorted(
+                candidate_participants.items(), key=lambda x: x[1], reverse=True
+            )
+            # Add top candidate (most frequent user appearing near conversation_name)
+            if sorted_candidates:
+                participants.add(sorted_candidates[0][0])
+                # If there's a clear second participant (at least 50% as frequent), add it too
+                # This handles group chats or cases where there are multiple participants
+                if len(sorted_candidates) > 1 and sorted_candidates[1][1] >= sorted_candidates[0][1] * 0.5:
+                    participants.add(sorted_candidates[1][0])
+        
+        # If we still only have the conversation_name, try a simpler approach:
+        # Just use the top 2 users by message count (excluding "unknown")
+        if len(participants) == 1:
+            sorted_users = sorted(
+                [(u, c) for u, c in user_counts.items() if u != "unknown"],
+                key=lambda x: x[1],
+                reverse=True
+            )
+            # Add top user(s) - for DM, typically top 2 users
+            for user, count in sorted_users[:2]:
+                if user not in participants:
+                    participants.add(user)
+                    break
+        
+        logger.info(
+            f"Identified conversation participants: {sorted(participants)}. "
+            f"Filtering messages to only include these users."
+        )
+        
+        # Filter messages to only include those from participants
+        filtered = [
+            msg for msg in messages
+            if msg.get("user", "unknown") in participants
+        ]
+        
+        logger.info(
+            f"Filtered {len(messages)} messages to {len(filtered)} messages "
+            f"from conversation participants"
+        )
+        
+        return filtered
+
     def parse_timestamp(self, ts: str) -> datetime:
         """Convert Slack timestamp to datetime object.
 
@@ -452,6 +601,15 @@ class BrowserResponseProcessor:
             logger.warning("No messages found in any response files")
             return 0, {}
 
+        # Filter by conversation participants (for browser exports, filter out messages from other conversations)
+        # For DM conversations, identify participants and exclude messages from other users
+        all_messages = self._filter_by_conversation_participants(
+            all_messages, conversation_name
+        )
+        if not all_messages:
+            logger.warning("No messages found after filtering by conversation participants")
+            return 0, {}
+
         # Filter by date range if specified
         if oldest_ts or latest_ts:
             filtered_messages = []
@@ -648,6 +806,15 @@ class BrowserResponseProcessor:
 
         if not all_messages:
             logger.warning("No messages found in any response files")
+            return {}, {}
+
+        # Filter by conversation participants (for browser exports, filter out messages from other conversations)
+        # For DM conversations, identify participants and exclude messages from other users
+        all_messages = self._filter_by_conversation_participants(
+            all_messages, conversation_name
+        )
+        if not all_messages:
+            logger.warning("No messages found after filtering by conversation participants")
             return {}, {}
 
         # Filter by date range if specified
