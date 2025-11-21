@@ -98,9 +98,9 @@ def extract_and_save_dom_messages(
         for attempt in range(MAX_SCROLL_ATTEMPTS):
             logger.info(f"Scroll attempt {attempt + 1}/{MAX_SCROLL_ATTEMPTS}")
             
-            # Press PageDown multiple times to load more messages
+            # Press PageUp multiple times to load older messages (scroll backward)
             for _ in range(PAGE_DOWN_PRESSES_PER_ATTEMPT):
-                mcp_press_key(key="PageDown")
+                mcp_press_key(key="PageUp")
             
             # Wait for messages to load
             time.sleep(SCROLL_WAIT_SECONDS)
@@ -136,18 +136,18 @@ def extract_and_save_dom_messages(
                         consecutive_no_new += 1
                         logger.info(f"No messages extracted ({consecutive_no_new}/{CONSECUTIVE_NO_NEW_MESSAGES_THRESHOLD})")
                     
-                    # Check date range if specified
-                    if end_date and extracted_data.get("latest"):
+                    # Check date range if specified (for backward scrolling, check oldest/start_date)
+                    if start_date and extracted_data.get("oldest"):
                         from datetime import datetime
                         try:
-                            latest_ts = float(extracted_data["latest"])
-                            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-                            end_ts = end_dt.timestamp()
-                            if latest_ts > end_ts:
-                                logger.info(f"Reached end date {end_date}, stopping scroll")
+                            oldest_ts = float(extracted_data["oldest"])
+                            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                            start_ts = start_dt.timestamp()
+                            if oldest_ts < start_ts:
+                                logger.info(f"Reached start date {start_date}, stopping scroll")
                                 break
                         except Exception as e:
-                            logger.warning(f"Failed to check end date: {e}")
+                            logger.warning(f"Failed to check start date: {e}")
                     
                     # Stop if no new messages for several attempts
                     if consecutive_no_new >= CONSECUTIVE_NO_NEW_MESSAGES_THRESHOLD:

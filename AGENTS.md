@@ -250,6 +250,22 @@ The bulk export feature (`--bulk-export`) automatically chunks large exports:
 
 4. **Metadata**: Each chunk includes date range and chunk number in header
 
+## DOM Extraction Workflow
+
+When extracting messages from Slack DOM using Cursor's MCP chrome-devtools tools:
+
+**⚠️ CRITICAL: Do NOT create temporary wrapper scripts**
+
+**DO NOT create wrapper scripts** for DOM extraction. Previous attempts created temporary scripts (now removed) that tried to wrap MCP tools, but these are **not needed**. The MCP tools are sufficient.
+
+**Instead, use MCP tools directly:**
+1. Use `mcp_chrome-devtools_press_key(key="PageUp")` to scroll backward
+2. Use `mcp_chrome-devtools_evaluate_script()` with JavaScript from `src/browser_scraper.py`
+3. Use `scripts/combine_messages.py` to combine new messages with existing ones
+4. Use `src/main.py` to process and upload to Google Drive
+
+**See `DOM_EXTRACTION_GUIDE.md` for complete workflow documentation.**
+
 ## Common Pitfalls
 
 1. **Forgetting rate limits**: Always use rate limiting before API calls
@@ -257,6 +273,7 @@ The bulk export feature (`--bulk-export`) automatically chunks large exports:
 3. **Token permissions**: Token files must be 600, check in code
 4. **State management**: Don't create local state files - use Drive metadata
 5. **Error handling**: Distinguish between `None` (API error) and `[]` (no messages)
+6. **Creating temporary scripts**: Do NOT create wrapper scripts for DOM extraction - use MCP tools directly
 
 ## When Making Changes
 

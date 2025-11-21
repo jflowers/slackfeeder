@@ -27,6 +27,12 @@ requirements*.txt.lock
 # AI
 CODE_REVIEW*
 
+# Temporary extraction scripts (session-specific, not reusable)
+# Note: These patterns prevent creating temporary wrapper scripts
+scripts/extract_*_*.py
+scripts/run_extraction*.py
+session.log
+
 # OS-specific
 .DS_Store
 Thumbs.db

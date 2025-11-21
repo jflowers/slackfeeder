@@ -398,28 +398,31 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
    > "Please extract messages from the DOM for Tara from Nov 1st to Nov 18th"
    
    I will automatically:
-   - Scroll through the conversation using PageDown keys
-   - Extract messages as they become visible
+   - Scroll through the conversation using PageUp keys (to go backward in time)
+   - Extract messages as they become visible using JavaScript evaluation
+   - Combine new messages with existing ones using `scripts/combine_messages.py`
    - Save them to `browser_exports/response_dom_extraction.json`
    - Handle date filtering if you specify a date range
    
-   **Option B: Run extraction script manually**
+   **Important:** The extraction process works incrementally:
+   1. I scroll backward using MCP `press_key` tools
+   2. I extract messages using MCP `evaluate_script` with JavaScript from `src/browser_scraper.py`
+   3. I combine new messages with existing ones using `scripts/combine_messages.py`
+   4. I repeat until the target date range is covered
    
-   If you prefer to run it yourself, you can use the helper script:
-   ```python
-   from scripts.extract_dom_messages import extract_and_save_dom_messages
-   from pathlib import Path
+   See `DOM_EXTRACTION_GUIDE.md` for detailed technical information about how this works.
    
-   result = extract_and_save_dom_messages(
-       Path("browser_exports/response_dom_extraction.json"),
-       mcp_chrome-devtools_evaluate_script,
-       mcp_chrome-devtools_press_key,
-       start_date="2025-11-01",  # Optional
-       end_date="2025-11-18"     # Optional
-   )
-   ```
+   **Option B: Manual extraction (Advanced)**
    
-   **Note:** Automated scrolling handles the scrolling for you - Slack uses virtual scrolling/lazy loading, so messages must be scrolled into view before they're rendered in the DOM. The script automatically presses PageDown keys to load messages and extracts them as they become visible.
+   The `scripts/extract_dom_messages.py` script exists but **cannot be used directly in Cursor** because MCP tools cannot be passed as callable functions. Instead, use MCP tools directly:
+   
+   - Use `mcp_chrome-devtools_press_key` to scroll
+   - Use `mcp_chrome-devtools_evaluate_script` with JavaScript from `src/browser_scraper.py`
+   - Use `scripts/combine_messages.py` to combine messages incrementally
+   
+   See `DOM_EXTRACTION_GUIDE.md` for the complete manual workflow.
+   
+   **Note:** Slack uses virtual scrolling/lazy loading, so messages must be scrolled into view before they're rendered in the DOM. Scroll backward using PageUp keys to load older messages.
 
 3. **Process and upload to Google Drive**:
    ```bash
@@ -955,6 +958,37 @@ The `requirements.txt` file should be kept in sync with `pyproject.toml` for bac
 Or use `make requirements` if you have Make installed.
 
 This ensures both files stay in sync. The `pyproject.toml` file is the single source of truth.
+
+## Helper Scripts
+
+### `scripts/combine_messages.py`
+
+Combines newly extracted messages with existing messages during DOM extraction.
+
+**Usage:**
+```bash
+python3 scripts/combine_messages.py '{"ok":true,"messages":[...]}'
+```
+
+**What it does:**
+- Loads existing messages from `browser_exports/response_dom_extraction.json`
+- Adds new messages (deduplicates by timestamp)
+- Sorts all messages by timestamp
+- Saves back to `browser_exports/response_dom_extraction.json`
+- Prints progress (added count, total, date range)
+
+**When to use:**
+- During incremental DOM extraction (used automatically by Cursor Agent)
+- When manually extracting messages in batches
+- When filling gaps in extracted date ranges
+
+See `DOM_EXTRACTION_GUIDE.md` for detailed usage examples.
+
+### `scripts/extract_dom_messages.py`
+
+**Note:** This script exists but **cannot be used directly in Cursor** because MCP tools cannot be passed as callable functions. It was designed for a different environment.
+
+For Cursor Agent workflows, use MCP tools directly as documented in `DOM_EXTRACTION_GUIDE.md`.
 
 ## Contributing
 
