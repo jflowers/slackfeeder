@@ -9,8 +9,8 @@ This guide explains how to successfully extract messages from Slack DOM using Cu
 **Instead:** Use MCP tools directly as documented below. The workflow is:
 1. Use `mcp_chrome-devtools_press_key` to scroll
 2. Use `mcp_chrome-devtools_evaluate_script` to extract
-3. Use `scripts/combine_messages.py` to combine
-4. Use `src/main.py` to process and upload
+3. Use `scripts/extract_dom_messages.py` to combine and deduplicate (outputs to stdout)
+4. Pipe directly to `src/main.py` to process and upload
 
 No wrapper scripts are needed - the MCP tools are sufficient.
 
@@ -19,8 +19,8 @@ No wrapper scripts are needed - the MCP tools are sufficient.
 The DOM extraction process works by:
 1. **Scrolling** through Slack conversation using MCP tools
 2. **Extracting** messages from the visible DOM using JavaScript
-3. **Combining** new messages with existing ones using `combine_messages.py`
-4. **Processing** and uploading to Google Drive using `src/main.py`
+3. **Combining and deduplicating** messages using `extract_dom_messages.py` (with `append=True` for incremental extraction)
+4. **Piping** messages directly to `src/main.py` for processing and uploading to Google Drive
 
 ## Why Not Use `extract_dom_messages.py` Directly?
 
@@ -57,10 +57,10 @@ The Cursor Agent should:
    // This extracts messages from the DOM
    ```
 
-3. **Combine new messages** using `scripts/combine_messages.py`:
-   ```bash
-   python3 scripts/combine_messages.py '{"ok":true,"messages":[...]}'
-   ```
+3. **Extract and combine messages** using `scripts/extract_dom_messages.py`:
+   - Use `append=True` for incremental extraction (combines with previous extractions)
+   - Use `output_to_stdout=True` to pipe directly to `main.py`
+   - The script handles deduplication and sorting automatically
 
 4. **Repeat** until you've reached the target date or no new messages are found
 
@@ -159,25 +159,23 @@ The extraction script is located in `src/browser_scraper.py`:
 }
 ```
 
-## combine_messages.py Usage
+## Message Combining and Deduplication
 
-The `scripts/combine_messages.py` script combines new messages with existing ones:
+The `scripts/extract_dom_messages.py` script handles combining and deduplication automatically:
 
+- **Deduplication**: Automatically deduplicates messages by timestamp
+- **Sorting**: Sorts all messages by timestamp
+- **Incremental extraction**: Use `append=True` to combine with previous extractions
+- **Output**: Use `output_to_stdout=True` to pipe directly to `main.py`
+
+**Example workflow:**
 ```bash
-python3 scripts/combine_messages.py '{"ok":true,"messages":[...]}'
-```
-
-**What it does:**
-- Loads existing messages from `browser_exports/response_dom_extraction.json`
-- Adds new messages (deduplicates by timestamp)
-- Sorts all messages by timestamp
-- Saves back to `browser_exports/response_dom_extraction.json`
-
-**Output:**
-```
-Added 10 new messages
-Total: 252 messages
-Date range: 2023-11-29 15:31:11.457439 to 2024-06-03 14:59:31.436389
+# Extract messages and pipe directly to main.py
+python3 scripts/extract_dom_messages.py \
+  --mcp-evaluate-script <function> \
+  --mcp-press-key <function> \
+  --output-to-stdout | \
+  python3 src/main.py --browser-export-dm --browser-conversation-name "Tara" --upload-to-drive
 ```
 
 ## Example: Complete Extraction Session
@@ -189,23 +187,24 @@ Here's what a successful session looks like:
 
 2. **Agent actions:**
    - Scrolls backward using `PageUp` keys
-   - Extracts messages using JavaScript evaluation
-   - Combines messages using `combine_messages.py`
+   - Extracts messages using JavaScript evaluation via `extract_dom_messages.py`
+   - Uses `append=True` for incremental extraction (combines and deduplicates automatically)
    - Repeats until target date range is covered
-   - Processes and uploads using `src/main.py`
+   - Pipes combined messages directly to `src/main.py` via stdout (no intermediate files)
 
 3. **Result:**
-   - Messages extracted and saved to `browser_exports/response_dom_extraction.json`
+   - Messages extracted and piped directly to `main.py` via stdin
    - Google Docs created in Google Drive folder "Tara"
-   - One doc per day with messages
+   - One doc per day with messages (same format as `--export-history`)
 
 ## Tips for Success
 
 1. **Scroll gradually:** Press `PageUp` 5-10 times, wait 3 seconds, then extract
-2. **Check progress:** After combining, check the date range to see how far back you've gone
+2. **Check progress:** After extraction, check the date range to see how far back you've gone
 3. **Handle gaps:** If you notice gaps (e.g., Dec 1-13 missing), scroll to that range and extract
-4. **Deduplication:** `combine_messages.py` automatically deduplicates, so you can extract overlapping ranges safely
+4. **Deduplication:** `extract_dom_messages.py` automatically deduplicates, so you can extract overlapping ranges safely
 5. **Date filtering:** Use `--start-date` and `--end-date` in `src/main.py` to process only specific ranges
+6. **Incremental extraction:** Use `append=True` in `extract_dom_messages.py` to combine with previous extractions
 
 ## Troubleshooting
 
@@ -213,14 +212,15 @@ Here's what a successful session looks like:
 - **Solution:** Make sure browser is focused and Slack conversation is visible. Try scrolling a bit more.
 
 **Problem:** Messages not combining properly
-- **Solution:** Check that JSON is properly escaped when passing to `combine_messages.py`. Use single quotes around the JSON string.
+- **Solution:** Use `append=True` in `extract_dom_messages.py` for incremental extraction. The script handles combining automatically.
 
 **Problem:** Date range not reached
 - **Solution:** Continue scrolling backward. Slack uses virtual scrolling, so you need to scroll through all intermediate dates.
 
 ## Files Involved
 
-- `browser_exports/response_dom_extraction.json` - Main extraction file (accumulates messages)
-- `scripts/combine_messages.py` - Combines new messages with existing ones
+- `scripts/extract_dom_messages.py` - Extracts messages from DOM, handles deduplication and combining, outputs to stdout
 - `src/browser_scraper.py` - Contains JavaScript extraction function
-- `src/main.py` - Processes and uploads to Google Drive
+- `src/main.py` - Processes messages from stdin and uploads to Google Drive
+
+**Important:** No intermediate files are created. Messages flow directly via stdin/stdout pipes.

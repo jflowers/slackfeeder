@@ -166,8 +166,17 @@ def preprocess_history(
     history_data: List[Dict[str, Any]],
     slack_client: SlackClient,
     people_cache: Optional[Dict[str, str]] = None,
+    use_display_names: bool = False,
 ) -> str:
-    """Processes Slack history into a human-readable format."""
+    """Processes Slack history into a human-readable format.
+    
+    Args:
+        history_data: List of message dictionaries
+        slack_client: SlackClient instance for looking up user info (can be None if use_display_names=True)
+        people_cache: Optional cache dictionary mapping user IDs to display names
+        use_display_names: If True, treat 'user' field as display name directly (for browser exports)
+                          If False, treat 'user' field as user ID and look up display name (API exports)
+    """
     threads = {}
     for message in history_data:
         text = message.get("text", "")
@@ -184,8 +193,9 @@ def preprocess_history(
         elif text and files:
             text += " [File attached]"
 
-        # Replace user IDs in message text with user names
-        text = replace_user_ids_in_text(text, slack_client, people_cache)
+        # Replace user IDs in message text with user names (only if not using display names)
+        if not use_display_names:
+            text = replace_user_ids_in_text(text, slack_client, people_cache)
 
         thread_key = message.get("thread_ts", message.get("ts"))
         if not thread_key:
@@ -199,16 +209,25 @@ def preprocess_history(
         user_id = message.get("user")
         name = "Unknown User"
         if user_id:
-            # Check cache first
-            if people_cache and user_id in people_cache:
-                name = people_cache[user_id]
+            if use_display_names:
+                # For browser exports, user_id is already a display name
+                name = user_id
             else:
-                user_info = slack_client.get_user_info(user_id)
-                if user_info:
-                    name = user_info.get("displayName", message.get("username", user_id))
-                    # Update cache for future use
-                    if people_cache is not None:
-                        people_cache[user_id] = name
+                # For API exports, user_id is a Slack user ID (U...)
+                # Check cache first
+                if people_cache and user_id in people_cache:
+                    name = people_cache[user_id]
+                else:
+                    if slack_client:
+                        user_info = slack_client.get_user_info(user_id)
+                        if user_info:
+                            name = user_info.get("displayName", message.get("username", user_id))
+                            # Update cache for future use
+                            if people_cache is not None:
+                                people_cache[user_id] = name
+                    else:
+                        # No slack_client available, use user_id as fallback
+                        name = user_id
 
         text = text.replace("\n", "\n    ")
 
@@ -1627,14 +1646,12 @@ if __name__ == "__main__":
             sys.exit(1)
     elif args.browser_export_dm:
         # Handle browser-based DM export
+        # This uses the same code path as --export-history but extracts messages directly from DOM
         from pathlib import Path
         from datetime import datetime, timezone
         from src.browser_response_processor import BrowserResponseProcessor
         from src.browser_scraper import extract_messages_from_dom
 
-        # Validate and sanitize paths to prevent directory traversal
-        response_dir = Path(args.browser_response_dir).resolve()
-        output_dir = Path(args.browser_output_dir).resolve()
         conversation_name = args.browser_conversation_name
         
         # Require explicit conversation name - fail if still using default "DM"
@@ -1651,45 +1668,69 @@ if __name__ == "__main__":
                 f"Example: --browser-conversation-name 'Tara'"
             )
             sys.exit(1)
-        
-        # Ensure paths are within allowed directories (prevent directory traversal)
-        # For browser exports, we allow relative paths but resolve them to absolute
-        # This prevents ../ attacks while still allowing flexibility
-        try:
-            response_dir = response_dir.resolve(strict=False)
-            output_dir = output_dir.resolve(strict=False)
-        except (OSError, RuntimeError) as e:
-            logger.error(f"Invalid path specified: {e}")
-            sys.exit(1)
 
         logger.info("Browser-based DM export mode (DOM extraction)")
-        logger.info(f"Response directory: {response_dir}")
-        logger.info(f"Output directory: {output_dir}")
         logger.info(f"Conversation name: {conversation_name}")
+        logger.info("Reading messages from stdin (no intermediate files)")
 
+        # Initialize processor for conversation filtering only
         processor = BrowserResponseProcessor()
         
-        # DOM extraction is the only method - look for response_dom_extraction.json
-        response_dir.mkdir(parents=True, exist_ok=True)
-        dom_response_file = response_dir / "response_dom_extraction.json"
+        # Extract messages from DOM
+        # Messages must be provided via stdin (JSON format) - no intermediate files
+        # Browser exports use the same code path as --export-history
+        all_messages = []
+        import json
         
-        if not dom_response_file.exists():
-            logger.error("DOM extraction file not found. Please extract messages first.")
+        # Read messages from stdin (required - no file fallback)
+        if sys.stdin.isatty():  # stdin is a TTY (no data piped)
+            logger.error("No messages provided. Messages must be piped via stdin.")
             logger.info("")
             logger.info("To extract messages from DOM:")
             logger.info("1. Open Slack in a browser and navigate to the conversation")
             logger.info("2. Scroll to load all messages in the date range")
             logger.info("3. Use MCP chrome-devtools tools to run DOM extraction")
-            logger.info("   Example: Use scripts/extract_dom_messages.py or call extract_messages_from_dom()")
-            logger.info("4. Save the result to: response_dom_extraction.json")
+            logger.info("   Example: Use mcp_chrome-devtools_evaluate_script with extract_messages_from_dom_script()")
+            logger.info("4. Pipe JSON to this script:")
+            logger.info("   python scripts/extract_dom_messages.py --output-to-stdout | \\")
+            logger.info("     python src/main.py --browser-export-dm --browser-conversation-name 'Name' --upload-to-drive")
+            logger.info("")
+            logger.info("Browser exports use the same file conventions as --export-history:")
+            logger.info("  - File naming: {conversation_name} slack messages {YYYYMMDD}")
+            logger.info("  - Same grouping and formatting logic")
+            logger.info("  - No intermediate files needed")
             logger.info("")
             logger.info("See ReadMe.md for detailed instructions.")
             sys.exit(1)
         
-        logger.info(f"Found DOM extraction file: {dom_response_file}")
-        response_files = [dom_response_file]
+        try:
+            logger.info("Reading messages from stdin...")
+            stdin_data = sys.stdin.read()
+            if not stdin_data.strip():
+                logger.error("No data received from stdin")
+                sys.exit(1)
+            
+            response_data = json.loads(stdin_data)
+            all_messages = response_data.get("messages", [])
+            logger.info(f"Loaded {len(all_messages)} messages from stdin")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from stdin: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Failed to read from stdin: {e}", exc_info=True)
+            sys.exit(1)
+        
+        if not all_messages:
+            logger.error("No messages found in input")
+            sys.exit(1)
 
-        # Parse date range if provided
+        # Filter messages by conversation participants (browser exports may contain multiple conversations)
+        all_messages = processor._filter_by_conversation_participants(all_messages, conversation_name)
+        if not all_messages:
+            logger.warning("No messages found after filtering by conversation participants")
+            sys.exit(1)
+        logger.info(f"Filtered to {len(all_messages)} messages from conversation participants")
+
         # Determine oldest timestamp for incremental fetching
         # Always check Google Drive for last export when uploading to Drive,
         # even if --start-date is explicitly provided (use the later of the two)
@@ -1808,6 +1849,29 @@ if __name__ == "__main__":
                 )
                 sys.exit(1)
 
+        # Filter messages by date range if specified
+        if oldest_ts or latest_ts:
+            filtered_messages = []
+            oldest_float = float(oldest_ts) if oldest_ts else 0.0
+            latest_float = float(latest_ts) if latest_ts else float("inf")
+            
+            for msg in all_messages:
+                msg_ts = msg.get("ts")
+                if msg_ts:
+                    msg_ts_float = float(msg_ts)
+                    if msg_ts_float >= oldest_float and msg_ts_float <= latest_float:
+                        filtered_messages.append(msg)
+            
+            logger.info(
+                f"Filtered {len(all_messages)} messages to {len(filtered_messages)} "
+                f"messages in date range"
+            )
+            all_messages = filtered_messages
+
+        if not all_messages:
+            logger.warning("No messages found after date range filtering")
+            sys.exit(1)
+
         # Check if uploading to Google Drive
         if args.upload_to_drive:
             # Google Drive client may have been initialized earlier for incremental export check
@@ -1848,17 +1912,18 @@ if __name__ == "__main__":
 
             logger.info(f"Using folder: {sanitized_folder_name} ({folder_id})")
 
-            # Process responses for Google Drive
-            logger.info(f"Processing {len(response_files)} response files for Google Drive upload")
-            daily_groups, user_map = processor.process_responses_for_google_drive(
-                response_files, conversation_name, oldest_ts=oldest_ts, latest_ts=latest_ts
+            # Use the same grouping and processing logic as --export-history
+            # Group messages by date (YYYYMMDD format) - same as main export
+            daily_groups = group_messages_by_date(all_messages)
+            logger.info(
+                f"Grouped {len(all_messages)} messages into {len(daily_groups)} daily group(s)"
             )
 
             if not daily_groups:
                 logger.warning("No messages found to upload")
                 sys.exit(1)
 
-            # Process each day and create/update Google Docs
+            # Process each day and create/update Google Docs - same as main export
             stats = {
                 "processed": 0,
                 "uploaded": 0,
@@ -1866,15 +1931,19 @@ if __name__ == "__main__":
                 "total_messages": 0,
             }
 
-            for date_key in sorted(daily_groups.keys()):
+            # Sort dates chronologically
+            sorted_dates = sorted(daily_groups.keys())
+
+            for date_key in sorted_dates:
                 daily_messages = daily_groups[date_key]
                 logger.info(
                     f"Processing {len(daily_messages)} messages for date {date_key}"
                 )
 
-                # Process messages for this day (format like main export)
-                processed_messages = processor.preprocess_messages_for_google_doc(
-                    daily_messages, user_map
+                # Process messages for this day - use preprocess_history with use_display_names=True
+                # This uses the same formatting logic as --export-history
+                processed_messages = preprocess_history(
+                    daily_messages, slack_client=None, people_cache=None, use_display_names=True
                 )
 
                 if not processed_messages or not processed_messages.strip():
@@ -1883,7 +1952,7 @@ if __name__ == "__main__":
                     )
                     continue
 
-                # Create doc name: conversation name slack messages yyyymmdd
+                # Create doc name: conversation name slack messages yyyymmdd (same as main export)
                 doc_name_base = f"{conversation_name} slack messages {date_key}"
                 doc_name = sanitize_folder_name(doc_name_base)
 
@@ -1952,18 +2021,13 @@ Total Messages: {len(daily_messages)}
                     stats["total_messages"] += len(daily_messages)
                     logger.info(f"Created/updated Google Doc for {date_key}")
 
-            # Save export metadata (for incremental exports)
-            if daily_groups:
-                # Get latest timestamp from all messages
-                all_messages_flat = []
-                for messages in daily_groups.values():
-                    all_messages_flat.extend(messages)
-                if all_messages_flat:
-                    latest_message_ts = max(float(msg.get("ts", 0)) for msg in all_messages_flat)
-                    google_drive_client.save_export_metadata(
-                        folder_id, safe_conversation_name, str(latest_message_ts)
-                    )
-                    logger.info(f"Saved export metadata for {conversation_name}")
+            # Save export metadata (for incremental exports) - same as main export
+            if all_messages:
+                latest_message_ts = max(float(msg.get("ts", 0)) for msg in all_messages)
+                google_drive_client.save_export_metadata(
+                    folder_id, safe_conversation_name, str(latest_message_ts)
+                )
+                logger.info(f"Saved export metadata for {conversation_name}")
 
             # Log statistics
             logger.info("=" * 80)
@@ -1975,12 +2039,81 @@ Total Messages: {len(daily_messages)}
             logger.info("=" * 80)
 
         else:
-            # Local file export (existing behavior)
-            logger.info(f"Processing {len(response_files)} response files")
-            total_messages, date_counts = processor.process_responses(
-                response_files, output_dir, conversation_name, oldest_ts=oldest_ts, latest_ts=latest_ts
+            # Local file export - use same logic as main export but write to files
+            # Group messages by date
+            daily_groups = group_messages_by_date(all_messages)
+            logger.info(
+                f"Grouped {len(all_messages)} messages into {len(daily_groups)} daily group(s)"
             )
-            logger.info(f"Export complete: {total_messages} messages across {len(date_counts)} dates")
+
+            if not daily_groups:
+                logger.warning("No messages found to export")
+                sys.exit(1)
+
+            # Setup output directory
+            output_dir = _setup_output_directory()
+
+            # Write each day to a file - same naming convention as main export
+            stats = {
+                "processed": 0,
+                "total_messages": 0,
+            }
+
+            sorted_dates = sorted(daily_groups.keys())
+            for date_key in sorted_dates:
+                daily_messages = daily_groups[date_key]
+                logger.info(f"Processing {len(daily_messages)} messages for date {date_key}")
+
+                # Process messages - use preprocess_history with use_display_names=True
+                processed_messages = preprocess_history(
+                    daily_messages, slack_client=None, people_cache=None, use_display_names=True
+                )
+
+                if not processed_messages or not processed_messages.strip():
+                    logger.warning(
+                        f"No processable content found for {date_key} of {conversation_name}. Skipping."
+                    )
+                    continue
+
+                # Add metadata header (same format as main export)
+                export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
+                date_display = date_obj.strftime("%Y-%m-%d")
+                metadata_header = f"""Slack Conversation Export
+Channel: {conversation_name}
+Channel ID: [Browser Export - No ID]
+Export Date: {export_date}
+Date: {date_display}
+Total Messages: {len(daily_messages)}
+
+{'='*80}
+
+"""
+                processed_messages = metadata_header + processed_messages
+
+                # Create filename - same convention as main export
+                safe_conversation_name = sanitize_filename(conversation_name)
+                output_filename = f"{safe_conversation_name}_history_{date_key}.txt"
+                output_filepath = os.path.join(output_dir, output_filename)
+
+                # Write file
+                try:
+                    with open(output_filepath, "w", encoding="utf-8") as f:
+                        f.write(processed_messages)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    
+                    stats["processed"] += 1
+                    stats["total_messages"] += len(daily_messages)
+                    logger.info(f"Saved processed history to {output_filepath}")
+                except IOError as e:
+                    logger.error(f"Failed to write file {output_filepath}: {e}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Unexpected error writing file {output_filepath}: {e}", exc_info=True)
+                    continue
+
+            logger.info(f"Export complete: {stats['total_messages']} messages across {len(daily_groups)} dates")
     elif not any([args.make_ref_files, args.export_history, args.upload_to_drive]):
         parser.print_help()
     else:

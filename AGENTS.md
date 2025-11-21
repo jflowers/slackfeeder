@@ -254,17 +254,29 @@ The bulk export feature (`--bulk-export`) automatically chunks large exports:
 
 When extracting messages from Slack DOM using Cursor's MCP chrome-devtools tools:
 
-**⚠️ CRITICAL: Do NOT create temporary wrapper scripts**
+**⚠️ CRITICAL: Do NOT use `response_dom_extraction.json` file**
 
-**DO NOT create wrapper scripts** for DOM extraction. Previous attempts created temporary scripts (now removed) that tried to wrap MCP tools, but these are **not needed**. The MCP tools are sufficient.
+**DO NOT create or use `response_dom_extraction.json`** or any intermediate JSON files. Browser exports (`--browser-export-dm`) use the **exact same code path** as `--export-history`:
+- Same file naming conventions: `{conversation_name} slack messages {YYYYMMDD}`
+- Same grouping logic: `group_messages_by_date()` from `main.py`
+- Same formatting logic: `preprocess_history()` with `use_display_names=True`
+- Messages should be piped directly via stdin or passed programmatically
 
-**Instead, use MCP tools directly:**
-1. Use `mcp_chrome-devtools_press_key(key="PageUp")` to scroll backward
-2. Use `mcp_chrome-devtools_evaluate_script()` with JavaScript from `src/browser_scraper.py`
-3. Use `scripts/combine_messages.py` to combine new messages with existing ones
-4. Use `src/main.py` to process and upload to Google Drive
+**Workflow:**
+1. Extract messages from DOM using MCP chrome-devtools tools
+2. Pipe messages directly to `main.py` via stdin (JSON format)
+3. Or call extraction function programmatically and pass messages directly
+4. `main.py` processes messages using the same logic as `--export-history`
 
-**See `DOM_EXTRACTION_GUIDE.md` for complete workflow documentation.**
+**Example:**
+```python
+# Extract messages and pipe to main.py (no file created)
+extract_and_save_dom_messages(
+    mcp_evaluate_script, mcp_press_key,
+    output_file=None,  # No file created
+    output_to_stdout=True  # Pipe to main.py
+)
+```
 
 **⚠️ IMPORTANT: Always specify `--browser-conversation-name`**
 
@@ -279,6 +291,7 @@ When processing browser exports with `src/main.py --browser-export-dm`, **always
 5. **Error handling**: Distinguish between `None` (API error) and `[]` (no messages)
 6. **Creating temporary scripts**: Do NOT create wrapper scripts for DOM extraction - use MCP tools directly
 7. **Missing conversation name**: Always specify `--browser-conversation-name` when using `--browser-export-dm`. The default "DM" will cause the script to fail.
+8. **Using response_dom_extraction.json**: Do NOT create or use `response_dom_extraction.json` or any intermediate files. Browser exports use the same code path as `--export-history` and should pipe messages via stdin or pass them directly.
 
 ## When Making Changes
 

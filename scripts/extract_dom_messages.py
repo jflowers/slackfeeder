@@ -41,35 +41,37 @@ MAX_SCROLL_ATTEMPTS = 100  # Maximum scroll attempts before stopping
 
 
 def extract_and_save_dom_messages(
-    output_file: Path,
     mcp_evaluate_script: Callable,
     mcp_press_key: Callable,
+    output_file: Optional[Path] = None,
     append: bool = False,
     auto_scroll: bool = True,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    output_to_stdout: bool = False,
 ) -> Dict[str, Any]:
-    """Extract messages from DOM and save to file.
+    """Extract messages from DOM and optionally save to file or output to stdout.
 
     Automatically scrolls through the conversation to load all messages by default.
     Uses MCP tools to press PageDown keys and extract messages as they become visible.
 
     Args:
-        output_file: Path to save extracted messages
         mcp_evaluate_script: MCP function to evaluate JavaScript (must be callable)
         mcp_press_key: MCP function to press keys (required for scrolling, must be callable)
+        output_file: Optional path to save extracted messages (if None and output_to_stdout=False, no file is created)
         append: If True, append to existing file; if False, overwrite
         auto_scroll: If True, automatically scroll through conversation (default: True)
         start_date: Optional start date filter (YYYY-MM-DD format)
         end_date: Optional end date filter (YYYY-MM-DD format)
+        output_to_stdout: If True, output JSON to stdout instead of (or in addition to) file
 
     Returns:
         Dictionary with extraction results
 
     Raises:
         ValueError: If mcp_press_key or mcp_evaluate_script are not callable
-        OSError: If file cannot be written
-        PermissionError: If file permissions prevent writing
+        OSError: If file cannot be written (only if output_file is provided)
+        PermissionError: If file permissions prevent writing (only if output_file is provided)
     """
     if not callable(mcp_press_key):
         raise ValueError("mcp_press_key must be callable")
@@ -78,9 +80,9 @@ def extract_and_save_dom_messages(
     
     script = extract_messages_from_dom_script()
     
-    # Load existing messages if appending
+    # Load existing messages if appending and output_file is provided
     existing_messages = []
-    if append and output_file.exists():
+    if append and output_file and output_file.exists():
         try:
             with open(output_file, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
@@ -263,33 +265,40 @@ def extract_and_save_dom_messages(
         "has_more": False,
     }
     
-    # Save to file using atomic write pattern
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = output_file.with_suffix(output_file.suffix + ".tmp")
-    try:
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(combined_result, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())  # Ensure data is written to disk
-        
-        # Atomic rename
-        temp_file.replace(output_file)
-    except (OSError, IOError, PermissionError) as e:
-        # Clean up temp file on error
-        if temp_file.exists():
-            try:
-                temp_file.unlink()
-            except Exception:
-                pass
-        logger.error(f"Failed to save extracted messages to {output_file}: {e}")
-        raise
+    # Save to file only if output_file is provided (optional - can output to stdout instead)
+    if output_file:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = output_file.with_suffix(output_file.suffix + ".tmp")
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(combined_result, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())  # Ensure data is written to disk
+            
+            # Atomic rename
+            temp_file.replace(output_file)
+            logger.info(
+                f"Saved {len(unique_messages)} unique messages to {output_file}"
+            )
+        except (OSError, IOError, PermissionError) as e:
+            # Clean up temp file on error
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+            logger.error(f"Failed to save extracted messages to {output_file}: {e}")
+            raise
     
-    logger.info(
-        f"Saved {len(unique_messages)} unique messages to {output_file}"
-    )
     logger.info(
         f"Date range: {combined_result['oldest']} to {combined_result['latest']}"
     )
+    
+    # Output to stdout if requested (for piping to main.py)
+    if output_to_stdout:
+        json.dump(combined_result, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")  # Add newline after JSON
+        sys.stdout.flush()
     
     return combined_result
 

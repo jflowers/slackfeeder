@@ -400,15 +400,16 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
    I will automatically:
    - Scroll through the conversation using PageUp keys (to go backward in time)
    - Extract messages as they become visible using JavaScript evaluation
-   - Combine new messages with existing ones using `scripts/combine_messages.py`
-   - Save them to `browser_exports/response_dom_extraction.json`
+   - Use `scripts/extract_dom_messages.py` to extract, deduplicate, and combine messages (outputs to stdout)
+   - Pipe messages directly to `src/main.py` via stdin (no intermediate files)
    - Handle date filtering if you specify a date range
    
    **Important:** The extraction process works incrementally:
    1. I scroll backward using MCP `press_key` tools
    2. I extract messages using MCP `evaluate_script` with JavaScript from `src/browser_scraper.py`
-   3. I combine new messages with existing ones using `scripts/combine_messages.py`
+   3. I use `extract_dom_messages.py` with `append=True` to combine and deduplicate messages automatically
    4. I repeat until the target date range is covered
+   5. I pipe the final combined messages to `src/main.py` for processing
    
    See `DOM_EXTRACTION_GUIDE.md` for detailed technical information about how this works.
    
@@ -418,7 +419,7 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
    
    - Use `mcp_chrome-devtools_press_key` to scroll
    - Use `mcp_chrome-devtools_evaluate_script` with JavaScript from `src/browser_scraper.py`
-   - Use `scripts/combine_messages.py` to combine messages incrementally
+   - Use `scripts/extract_dom_messages.py` with `append=True` to combine messages incrementally
    
    See `DOM_EXTRACTION_GUIDE.md` for the complete manual workflow.
    
@@ -960,29 +961,6 @@ Or use `make requirements` if you have Make installed.
 This ensures both files stay in sync. The `pyproject.toml` file is the single source of truth.
 
 ## Helper Scripts
-
-### `scripts/combine_messages.py`
-
-Combines newly extracted messages with existing messages during DOM extraction.
-
-**Usage:**
-```bash
-python3 scripts/combine_messages.py '{"ok":true,"messages":[...]}'
-```
-
-**What it does:**
-- Loads existing messages from `browser_exports/response_dom_extraction.json`
-- Adds new messages (deduplicates by timestamp)
-- Sorts all messages by timestamp
-- Saves back to `browser_exports/response_dom_extraction.json`
-- Prints progress (added count, total, date range)
-
-**When to use:**
-- During incremental DOM extraction (used automatically by Cursor Agent)
-- When manually extracting messages in batches
-- When filling gaps in extracted date ranges
-
-See `DOM_EXTRACTION_GUIDE.md` for detailed usage examples.
 
 ### `scripts/extract_dom_messages.py`
 
