@@ -23,7 +23,7 @@ logger = setup_logging()
 
 # Constants
 SCROLL_DELAY_SECONDS = 1.0  # Delay between scroll actions
-NETWORK_REQUEST_WAIT_SECONDS = 2.0  # Wait time for network requests after scrolling
+NETWORK_REQUEST_WAIT_SECONDS = 3.0  # Wait time for network requests after scrolling (increased from 2.0)
 CONVERSATIONS_HISTORY_ENDPOINT = "conversations.history"
 MAX_SCROLL_ATTEMPTS = 100  # Maximum number of scroll attempts before stopping
 

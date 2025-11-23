@@ -34,8 +34,9 @@ from src.utils import setup_logging
 logger = setup_logging()
 
 # Scrolling constants
-PAGE_DOWN_PRESSES_PER_ATTEMPT = 5  # Number of PageDown presses per scroll attempt
-SCROLL_WAIT_SECONDS = 2.0  # Wait time after scrolling for messages to load
+PAGE_DOWN_PRESSES_PER_ATTEMPT = 2  # Number of PageUp presses per scroll attempt (reduced from 5)
+SCROLL_WAIT_SECONDS = 3.0  # Wait time after scrolling for messages to load (increased from 2.0)
+SCROLL_KEY_DELAY_SECONDS = 0.3  # Delay between individual PageUp key presses
 CONSECUTIVE_NO_NEW_MESSAGES_THRESHOLD = 5  # Stop after N consecutive attempts with no new messages
 MAX_SCROLL_ATTEMPTS = 100  # Maximum scroll attempts before stopping
 
@@ -101,8 +102,10 @@ def extract_and_save_dom_messages(
             logger.info(f"Scroll attempt {attempt + 1}/{MAX_SCROLL_ATTEMPTS}")
             
             # Press PageUp multiple times to load older messages (scroll backward)
+            # Add small delay between each press to avoid being too aggressive
             for _ in range(PAGE_DOWN_PRESSES_PER_ATTEMPT):
                 mcp_press_key(key="PageUp")
+                time.sleep(SCROLL_KEY_DELAY_SECONDS)
             
             # Wait for messages to load
             time.sleep(SCROLL_WAIT_SECONDS)

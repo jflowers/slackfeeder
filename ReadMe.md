@@ -968,6 +968,36 @@ This ensures both files stay in sync. The `pyproject.toml` file is the single so
 
 For Cursor Agent workflows, use MCP tools directly as documented in `DOM_EXTRACTION_GUIDE.md`.
 
+### `scripts/combine_batches.py`
+
+Utility script to combine multiple message extraction batch files into a single deduplicated file. Useful when extracting messages in multiple batches during DOM extraction workflows.
+
+**Usage:**
+```bash
+python scripts/combine_batches.py batch1.json batch2.json batch3.json -o combined.json
+```
+
+**Features:**
+- Combines multiple JSON batch files into one
+- Automatically deduplicates messages by timestamp
+- Sorts messages chronologically
+- Outputs combined result with message count and date range
+
+**Example:**
+```bash
+# Combine multiple extraction batches
+python scripts/combine_batches.py \
+  browser_exports/conversation_batch_1.json \
+  browser_exports/conversation_batch_2.json \
+  browser_exports/conversation_batch_3.json \
+  -o browser_exports/conversation_combined.json
+
+# Then process the combined file
+cat browser_exports/conversation_combined.json | \
+  python src/main.py --browser-export-dm --upload-to-drive \
+    --browser-conversation-name "Conversation Name"
+```
+
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.

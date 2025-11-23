@@ -45,9 +45,10 @@ The Cursor Agent should:
 
 1. **Scroll backward** using `mcp_chrome-devtools_press_key` with `PageUp`:
    ```python
-   # Press PageUp multiple times to load older messages
+   # Press PageUp a few times to load older messages (less aggressive)
    mcp_chrome-devtools_press_key(key="PageUp")
-   # Repeat 5-10 times, then wait
+   sleep(0.3)  # Small delay between presses
+   mcp_chrome-devtools_press_key(key="PageUp")
    sleep(3)  # Wait for messages to load
    ```
 
@@ -199,7 +200,7 @@ Here's what a successful session looks like:
 
 ## Tips for Success
 
-1. **Scroll gradually:** Press `PageUp` 5-10 times, wait 3 seconds, then extract
+1. **Scroll gradually:** Press `PageUp` 2 times (with 0.3s delay between), wait 3 seconds, then extract
 2. **Check progress:** After extraction, check the date range to see how far back you've gone
 3. **Handle gaps:** If you notice gaps (e.g., Dec 1-13 missing), scroll to that range and extract
 4. **Deduplication:** `extract_dom_messages.py` automatically deduplicates, so you can extract overlapping ranges safely
