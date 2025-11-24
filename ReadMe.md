@@ -407,7 +407,7 @@ Create `config/browser-export.json` with your conversations to export. This file
             "is_mpim": true,
             "export": true,
             "share": true,
-            "shareMembers": ["emily.fox@example.com", "jenn.power@example.com"]
+            "shareMembers": ["alice@example.com", "bob@example.com"]
         }
     ]
 }
