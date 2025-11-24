@@ -5,7 +5,7 @@ import sys
 import time
 from calendar import monthrange
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 # Add project root to Python path so imports work regardless of how script is invoked
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -799,7 +799,7 @@ def share_folder_with_conversation_members(
         logger.info(f"Shared folder with {len(shared_emails)} participants")
 
 
-def _validate_and_setup_environment():
+def _validate_and_setup_environment() -> None:
     """Validate environment variables and setup clients.
 
     Returns:
@@ -856,7 +856,7 @@ def _validate_and_setup_environment():
     return slack_client, google_drive_client, google_drive_folder_id
 
 
-def _setup_output_directory():
+def _setup_output_directory() -> str:
     """Setup and validate output directory.
 
     Returns:
@@ -1241,7 +1241,7 @@ def share_folder_for_browser_export(
     )
 
 
-def _load_people_cache():
+def _load_people_cache() -> Tuple[Dict[str, str], Set[str], Set[str]]:
     """Load people.json cache and opt-out sets.
 
     Returns:
@@ -1783,7 +1783,7 @@ def _log_statistics(stats: Dict[str, int], upload_to_drive: bool) -> None:
     logger.info("=" * 80)
 
 
-def main(args):
+def main(args: argparse.Namespace) -> None:
     """Main function to run the Slack history export and upload process."""
     slack_client, google_drive_client, google_drive_folder_id = _validate_and_setup_environment()
 

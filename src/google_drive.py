@@ -13,6 +13,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
+import httplib2
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,12 @@ class GoogleDriveClient:
             self.creds = self._authenticate(credentials_file)
             if not self.creds:
                 raise ValueError("Failed to obtain valid credentials")
-            self.service = build("drive", "v3", credentials=self.creds)
+            # Create HTTP client with timeout
+            http = httplib2.Http(timeout=API_TIMEOUT_SECONDS)
+            self.service = build("drive", "v3", credentials=self.creds, http=http)
             if not self.service:
                 raise ValueError("Failed to build Google Drive service")
-            self.docs_service = build("docs", "v1", credentials=self.creds)
+            self.docs_service = build("docs", "v1", credentials=self.creds, http=http)
             if not self.docs_service:
                 raise ValueError("Failed to build Google Docs service")
             # Rate limiting state

@@ -26,7 +26,7 @@ def mock_build_with_docs():
         mock_documents = MagicMock()
         mock_docs_service.documents.return_value = mock_documents
 
-        def build_side_effect(service_name, version, credentials):
+        def build_side_effect(service_name, version, credentials=None, http=None):
             if service_name == "drive":
                 return mock_drive_service
             elif service_name == "docs":
