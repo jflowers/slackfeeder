@@ -1270,7 +1270,7 @@ def filter_messages_by_date_range(
         messages: List of message dictionaries to filter
         oldest_ts: Optional oldest timestamp (Unix timestamp string)
         latest_ts: Optional latest timestamp (Unix timestamp string)
-        validate_range: Whether to validate that oldest_ts < latest_ts
+        validate_range: Whether to validate that oldest_ts < latest_ts (default: True)
         max_date_range_days: Optional maximum date range in days (for validation)
 
     Returns:
@@ -1278,6 +1278,13 @@ def filter_messages_by_date_range(
         - filtered_messages: Filtered list of messages
         - error_message: None if successful, error message string if validation failed
     """
+    # Warn if validation is explicitly disabled (security/validation concern)
+    if not validate_range:
+        logger.warning(
+            "Date range validation is disabled. This may allow invalid date ranges to be processed. "
+            "Consider enabling validation for safer operation."
+        )
+    
     # Validate date range logic
     if validate_range and oldest_ts and latest_ts:
         try:
