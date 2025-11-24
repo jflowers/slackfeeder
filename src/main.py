@@ -1250,12 +1250,19 @@ def filter_messages_by_date_range(
     """
     # Validate date range logic
     if validate_range and oldest_ts and latest_ts:
-        if float(oldest_ts) > float(latest_ts):
+        try:
+            oldest_float_val = float(oldest_ts)
+            latest_float_val = float(latest_ts)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid timestamp format in date range validation: oldest={oldest_ts}, latest={latest_ts}", exc_info=True)
+            return [], f"Invalid timestamp format for date range validation"
+        
+        if oldest_float_val > latest_float_val:
             return [], f"Start date ({oldest_ts}) must be before end date ({latest_ts})"
 
         # Validate date range doesn't exceed maximum if specified
         if max_date_range_days:
-            date_range_days = (float(latest_ts) - float(oldest_ts)) / SECONDS_PER_DAY
+            date_range_days = (latest_float_val - oldest_float_val) / SECONDS_PER_DAY
             if date_range_days > max_date_range_days:
                 return [], (
                     f"Date range ({date_range_days:.0f} days) exceeds maximum allowed "
@@ -1265,15 +1272,31 @@ def filter_messages_by_date_range(
     # Filter messages by date range if specified
     if oldest_ts or latest_ts:
         filtered_messages = []
-        oldest_float = float(oldest_ts) if oldest_ts else 0.0
-        latest_float = float(latest_ts) if latest_ts else float("inf")
+        
+        # Validate and convert timestamps with error handling
+        try:
+            oldest_float = float(oldest_ts) if oldest_ts else 0.0
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid oldest_ts format: {oldest_ts}", exc_info=True)
+            return [], f"Invalid timestamp format for oldest_ts: {oldest_ts}"
+        
+        try:
+            latest_float = float(latest_ts) if latest_ts else float("inf")
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid latest_ts format: {latest_ts}", exc_info=True)
+            return [], f"Invalid timestamp format for latest_ts: {latest_ts}"
 
         for msg in messages:
             msg_ts = msg.get("ts")
             if msg_ts:
-                msg_ts_float = float(msg_ts)
-                if msg_ts_float >= oldest_float and msg_ts_float <= latest_float:
-                    filtered_messages.append(msg)
+                try:
+                    msg_ts_float = float(msg_ts)
+                    if msg_ts_float >= oldest_float and msg_ts_float <= latest_float:
+                        filtered_messages.append(msg)
+                except (ValueError, TypeError):
+                    # Skip messages with invalid timestamps
+                    logger.warning(f"Skipping message with invalid timestamp: {msg_ts}")
+                    continue
 
         logger.info(
             f"Filtered {len(messages)} messages to {len(filtered_messages)} "

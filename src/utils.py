@@ -5,6 +5,9 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+# Module-level logger
+logger = logging.getLogger(__name__)
+
 
 def setup_logging():
     """Sets up the logging configuration."""
@@ -20,6 +23,7 @@ def sanitize_folder_name(name: str) -> str:
     Google Drive folder names have restrictions:
     - Maximum 255 characters
     - Cannot contain certain special characters
+    - Must not be an absolute path or contain path traversal sequences
 
     Args:
         name: Folder name to sanitize
@@ -30,14 +34,26 @@ def sanitize_folder_name(name: str) -> str:
     if not name:
         return "unnamed_conversation"
 
+    # Prevent absolute paths - extract basename if absolute path detected
+    if os.path.isabs(name):
+        name = os.path.basename(name)
+        logger.warning(f"Absolute path detected in folder name, using basename: {name}")
+
     # Remove or replace invalid characters for Google Drive
     # Google Drive doesn't allow: / \ < > : " | ? *
     name = re.sub(r'[/\\<>:"|?*]', "_", name)
-    # Remove leading/trailing spaces and dots
+    
+    # Remove leading/trailing spaces and dots first
     name = name.strip(". ")
+    
+    # Explicitly prevent path traversal sequences after stripping
+    # Replace any remaining ".." sequences (should already be removed by above regex, but be explicit)
+    name = name.replace("..", "_")
+    
     # Limit length (Google Drive limit is 255 chars)
     if len(name) > 255:
         name = name[:255].rstrip(". ")
+    
     # Ensure we have a valid name
     if not name:
         name = "unnamed_conversation"

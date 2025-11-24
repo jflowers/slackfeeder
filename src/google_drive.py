@@ -164,21 +164,26 @@ class GoogleDriveClient:
                 logger.error(f"Failed to create token directory {token_dir}: {e}")
                 raise
 
-            with open(temp_path, "w") as f:
-                if use_locking and lock_file_func and unlock_file_func:
-                    # Lock file for exclusive write
-                    try:
-                        lock_file_func(f)
+            # Set restrictive umask before creating file to prevent race condition
+            old_umask = os.umask(0o077)  # Restrict permissions to owner only (600)
+            try:
+                with open(temp_path, "w") as f:
+                    if use_locking and lock_file_func and unlock_file_func:
+                        # Lock file for exclusive write
+                        try:
+                            lock_file_func(f)
+                            f.write(creds.to_json())
+                            f.flush()
+                            os.fsync(f.fileno())  # Ensure data is written to disk
+                        finally:
+                            unlock_file_func(f)
+                    else:
+                        # Write without locking
                         f.write(creds.to_json())
-                        f.flush()
-                        os.fsync(f.fileno())  # Ensure data is written to disk
-                    finally:
-                        unlock_file_func(f)
-                else:
-                    # Write without locking
-                    f.write(creds.to_json())
+            finally:
+                os.umask(old_umask)  # Restore original umask
 
-            # Set secure file permissions on temp file before move (fixes race condition)
+            # Set secure file permissions on temp file before move (additional safety)
             try:
                 os.chmod(temp_path, SECURE_FILE_PERMISSIONS)
                 logger.debug(f"Set secure permissions for token file: {temp_path}")
