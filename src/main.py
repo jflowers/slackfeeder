@@ -45,25 +45,52 @@ LARGE_CONVERSATION_THRESHOLD = 10000
 SECONDS_PER_DAY = 86400  # Seconds in a day
 BYTES_PER_MB = 1024 * 1024  # Bytes per megabyte
 
+# Configuration file names
+BROWSER_EXPORT_CONFIG_KEY = "browser-export"  # Key in browser-export.json
+BROWSER_EXPORT_CONFIG_FILENAME = "browser-export.json"  # Default config filename
+CHANNELS_CONFIG_FILENAME = "channels.json"  # Channels config filename
+PEOPLE_CONFIG_FILENAME = "people.json"  # People cache filename
+METADATA_FILE_SUFFIX = "_last_export.json"  # Suffix for metadata files in Google Drive
+
 
 # Environment variable parsing with validation
-def _get_env_int(key: str, default: int) -> int:
-    """Safely parse integer environment variable with fallback."""
+def _get_env_int(key: str, default: int, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
+    """Safely parse integer environment variable with fallback and range validation.
+    
+    Args:
+        key: Environment variable key
+        default: Default value if key not found or invalid
+        min_val: Optional minimum allowed value
+        max_val: Optional maximum allowed value
+        
+    Returns:
+        Parsed integer value, clamped to min_val/max_val if provided
+    """
     try:
         value = os.getenv(key)
         if value is None:
             return default
-        return int(value)
+        int_value = int(value)
+        
+        # Validate range if specified
+        if min_val is not None and int_value < min_val:
+            logger.warning(f"{key} value {int_value} below minimum {min_val}, using {min_val}")
+            return min_val
+        if max_val is not None and int_value > max_val:
+            logger.warning(f"{key} value {int_value} above maximum {max_val}, using {max_val}")
+            return max_val
+        
+        return int_value
     except ValueError:
         logger.warning(f"Invalid {key} value '{os.getenv(key)}', using default: {default}")
         return default
 
 
-MAX_FILE_SIZE_MB = _get_env_int("MAX_EXPORT_FILE_SIZE_MB", 100)
-MAX_MESSAGES_PER_CONVERSATION = _get_env_int("MAX_MESSAGES_PER_CONVERSATION", 50000)
+MAX_FILE_SIZE_MB = _get_env_int("MAX_EXPORT_FILE_SIZE_MB", 100, min_val=1, max_val=1000)
+MAX_MESSAGES_PER_CONVERSATION = _get_env_int("MAX_MESSAGES_PER_CONVERSATION", 50000, min_val=1)
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * BYTES_PER_MB
 # Maximum date range in days (1 year)
-MAX_DATE_RANGE_DAYS = _get_env_int("MAX_DATE_RANGE_DAYS", 365)
+MAX_DATE_RANGE_DAYS = _get_env_int("MAX_DATE_RANGE_DAYS", 365, min_val=1, max_val=3650)
 # Chunking thresholds for bulk exports
 CHUNK_DATE_RANGE_DAYS = 30  # Chunk if date range exceeds this
 CHUNK_MESSAGE_THRESHOLD = 10000  # Chunk if message count exceeds this
@@ -597,7 +624,7 @@ def share_folder_with_conversation_members(
     no_notifications_set: set,
     no_share_set: set,
     stats: Dict[str, int],
-    config_source: str = "channels.json",
+    config_source: str = CHANNELS_CONFIG_FILENAME,
 ) -> None:
     """Share a Google Drive folder with conversation members and manage permissions.
 
@@ -618,7 +645,7 @@ def share_folder_with_conversation_members(
         no_notifications_set: Set of emails who opted out of notifications
         no_share_set: Set of emails who opted out of being shared with
         stats: Statistics dictionary to update
-        config_source: Source of config (for logging) - "channels.json" or "browser-export.json"
+        config_source: Source of config (for logging) - CHANNELS_CONFIG_FILENAME or BROWSER_EXPORT_CONFIG_FILENAME
     """
     # Check if sharing is enabled
     should_share = conversation_info.get("share", True)
@@ -879,12 +906,12 @@ def load_browser_export_config(config_path: str) -> Optional[Dict[str, Any]]:
             logger.debug(f"Browser export config file not found: {config_path}")
             return None
         
-        browser_exports = config_data.get("browser-export", [])
+        browser_exports = config_data.get(BROWSER_EXPORT_CONFIG_KEY, [])
         if not isinstance(browser_exports, list):
-            logger.warning(f"Invalid browser-export.json structure: 'browser-export' must be a list")
+            logger.warning(f"Invalid {BROWSER_EXPORT_CONFIG_FILENAME} structure: '{BROWSER_EXPORT_CONFIG_KEY}' must be a list")
             return None
         
-        return {"browser-export": browser_exports}
+        return {BROWSER_EXPORT_CONFIG_KEY: browser_exports}
     except Exception as e:
         logger.warning(f"Error loading browser-export config: {e}", exc_info=True)
         return None
@@ -904,7 +931,7 @@ def find_conversation_in_config(config_data: Dict[str, Any], conversation_id: st
     if not config_data:
         return None
     
-    browser_exports = config_data.get("browser-export", [])
+    browser_exports = config_data.get(BROWSER_EXPORT_CONFIG_KEY, [])
     if not browser_exports:
         return None
     
@@ -973,7 +1000,7 @@ def share_folder_for_browser_export(
     # Check if sharing is enabled
     should_share = conversation_info.get("share", True)
     if not should_share:
-        logger.info(f"Sharing disabled for {sanitize_string_for_logging(conversation_name)} (share: false in browser-export.json)")
+        logger.info(f"Sharing disabled for {sanitize_string_for_logging(conversation_name)} (share: false in {BROWSER_EXPORT_CONFIG_FILENAME})")
         return
     
     # Get conversation ID
@@ -1210,7 +1237,7 @@ def share_folder_for_browser_export(
         no_notifications_set=no_notifications_set,
         no_share_set=no_share_set,
         stats=stats,
-        config_source="browser-export.json",
+        config_source=BROWSER_EXPORT_CONFIG_FILENAME,
     )
 
 
@@ -1472,6 +1499,22 @@ def get_oldest_timestamp_for_export(
     return oldest_ts
 
 
+def _validate_message(msg: Dict[str, Any]) -> bool:
+    """Validate message has required fields.
+    
+    Args:
+        msg: Message dictionary to validate
+        
+    Returns:
+        True if message has required fields, False otherwise
+    """
+    if not isinstance(msg, dict):
+        return False
+    # Messages should have at least a timestamp (ts) field
+    # Text field may be empty for some message types (e.g., file uploads)
+    return "ts" in msg
+
+
 def upload_messages_to_drive(
     messages: List[Dict[str, Any]],
     conversation_name: str,
@@ -1514,10 +1557,27 @@ def upload_messages_to_drive(
         if key not in stats:
             stats[key] = 0
 
+    # Validate messages before processing
+    invalid_count = 0
+    valid_messages = []
+    for msg in messages:
+        if _validate_message(msg):
+            valid_messages.append(msg)
+        else:
+            invalid_count += 1
+            logger.debug(f"Skipping invalid message (missing required fields): {msg.get('ts', 'no timestamp')}")
+    
+    if invalid_count > 0:
+        logger.warning(f"Skipped {invalid_count} invalid message(s) out of {len(messages)} total")
+    
+    if not valid_messages:
+        logger.warning("No valid messages found to upload")
+        return stats
+
     # Group messages by date
-    daily_groups = group_messages_by_date(messages)
+    daily_groups = group_messages_by_date(valid_messages)
     logger.info(
-        f"Grouped {len(messages)} messages into {len(daily_groups)} daily group(s)"
+        f"Grouped {len(valid_messages)} messages into {len(daily_groups)} daily group(s)"
     )
 
     if not daily_groups:
@@ -1531,7 +1591,10 @@ def upload_messages_to_drive(
     )
 
     if not folder_id:
-        logger.error(f"Failed to create/get folder for {conversation_name}")
+        logger.error(
+            f"Failed to create/get folder for {sanitize_string_for_logging(conversation_name)} "
+            f"(parent_folder_id: {google_drive_folder_id}, sanitized_name: {sanitized_folder_name})"
+        )
         return stats
 
     logger.info(f"Using folder: {sanitized_folder_name} ({folder_id})")
@@ -1655,7 +1718,8 @@ Total Messages: {len(daily_messages)}
 
             if not doc_id:
                 logger.error(
-                    f"Failed to create Google Doc for {date_key}{chunk_info} of {conversation_name}"
+                    f"Failed to create Google Doc for {date_key}{chunk_info} of {sanitize_string_for_logging(conversation_name)} "
+                    f"(folder_id: {folder_id}, doc_name: {sanitize_string_for_logging(doc_name)})"
                 )
                 stats["upload_failed"] += 1
             else:
@@ -1668,8 +1732,8 @@ Total Messages: {len(daily_messages)}
             is_first_chunk = False
 
     # Save export metadata with latest timestamp from all messages
-    if messages:
-        latest_message_ts = max(float(msg.get("ts", 0)) for msg in messages)
+    if valid_messages:
+        latest_message_ts = max(float(msg.get("ts", 0)) for msg in valid_messages)
         safe_conversation_name = sanitize_filename(conversation_name)
         google_drive_client.save_export_metadata(
             folder_id, safe_conversation_name, str(latest_message_ts)
@@ -2363,7 +2427,7 @@ if __name__ == "__main__":
         "--browser-export-config",
         type=str,
         required=False,  # Will be checked in code for browser-export-dm
-        help="Path to browser-export.json config file (REQUIRED for --browser-export-dm).",
+        help=f"Path to {BROWSER_EXPORT_CONFIG_FILENAME} config file (REQUIRED for --browser-export-dm).",
     )
     parser.add_argument(
         "--select-conversation",
@@ -2442,10 +2506,10 @@ if __name__ == "__main__":
                 "ERROR: --browser-export-config is required for browser exports."
             )
             logger.error(
-                "Browser exports require browser-export.json to ensure consistent naming and sharing."
+                f"Browser exports require {BROWSER_EXPORT_CONFIG_FILENAME} to ensure consistent naming and sharing."
             )
             logger.error(
-                f"Example: --browser-export-config config/browser-export.json"
+                f"Example: --browser-export-config config/{BROWSER_EXPORT_CONFIG_FILENAME}"
             )
             sys.exit(1)
         
@@ -2453,10 +2517,10 @@ if __name__ == "__main__":
         config_data = load_browser_export_config(args.browser_export_config)
         if not config_data:
             logger.error(
-                f"ERROR: Failed to load browser-export.json from {args.browser_export_config}"
+                f"ERROR: Failed to load {BROWSER_EXPORT_CONFIG_FILENAME} from {args.browser_export_config}"
             )
             logger.error(
-                "Ensure the file exists and has valid JSON structure with 'browser-export' array."
+                f"Ensure the file exists and has valid JSON structure with '{BROWSER_EXPORT_CONFIG_KEY}' array."
             )
             sys.exit(1)
         
@@ -2469,14 +2533,14 @@ if __name__ == "__main__":
         
         if not conversation_info:
             logger.error(
-                f"ERROR: Conversation not found in browser-export.json"
+                f"ERROR: Conversation not found in {BROWSER_EXPORT_CONFIG_FILENAME}"
             )
             if args.browser_conversation_id:
                 logger.error(f"  Searched by ID: {args.browser_conversation_id}")
             if args.browser_conversation_name and args.browser_conversation_name != "DM":
                 logger.error(f"  Searched by name: {args.browser_conversation_name}")
             logger.error(
-                "Ensure the conversation exists in browser-export.json with matching ID or name."
+                f"Ensure the conversation exists in {BROWSER_EXPORT_CONFIG_FILENAME} with matching ID or name."
             )
             sys.exit(1)
         
@@ -2484,7 +2548,7 @@ if __name__ == "__main__":
         conversation_name = conversation_info.get("name")
         if not conversation_name:
             logger.error(
-                f"ERROR: Conversation in browser-export.json is missing 'name' field"
+                f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'name' field"
             )
             sys.exit(1)
         
@@ -2492,7 +2556,7 @@ if __name__ == "__main__":
         args.browser_conversation_id = conversation_info.get("id")
         if not args.browser_conversation_id:
             logger.error(
-                f"ERROR: Conversation in browser-export.json is missing 'id' field"
+                f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'id' field"
             )
             sys.exit(1)
         
