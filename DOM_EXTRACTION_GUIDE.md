@@ -202,10 +202,37 @@ Here's what a successful session looks like:
 
 1. **Scroll gradually:** Press `PageUp` 2 times (with 0.3s delay between), wait 3 seconds, then extract
 2. **Check progress:** After extraction, check the date range to see how far back you've gone
-3. **Handle gaps:** If you notice gaps (e.g., Dec 1-13 missing), scroll to that range and extract
-4. **Deduplication:** `extract_dom_messages.py` automatically deduplicates, so you can extract overlapping ranges safely
-5. **Date filtering:** Use `--start-date` and `--end-date` in `src/main.py` to process only specific ranges
-6. **Incremental extraction:** Use `append=True` in `extract_dom_messages.py` to combine with previous extractions
+3. **Use date separators to identify gaps:** Take snapshots and look for date separators (e.g., "Friday, June 6th"). If you see non-consecutive dates (e.g., "June 27th" and "July 7th"), there are no messages between them - skip scrolling through those dates.
+4. **Ensure complete day coverage:** When extracting a specific date, scroll until you see both that date's separator and the previous date separator to ensure you've captured all messages from that day.
+5. **Handle gaps efficiently:** Use date separators to identify true gaps rather than scrolling through empty date ranges
+6. **Deduplication:** `extract_dom_messages.py` automatically deduplicates, so you can extract overlapping ranges safely
+7. **Date filtering:** Use `--start-date` and `--end-date` in `src/main.py` to process only specific ranges
+8. **Incremental extraction:** Use `append=True` in `extract_dom_messages.py` to combine with previous extractions
+
+## Using Date Separators
+
+Slack displays date separators in the DOM (e.g., "Friday, June 6th Press enter to select a date to jump to.") that are visible in snapshots as `listitem` elements with `roledescription="separator"`.
+
+**Key Benefits:**
+
+1. **Identify True Gaps:** If you see "June 27th" and "July 7th" separators both visible, there are no messages for June 28-30 and July 1-6. Skip scrolling through these dates.
+
+2. **Ensure Complete Day Coverage:** When extracting messages for June 6th:
+   - Scroll backward until you see the "June 6th" separator
+   - Continue scrolling until you see the previous date separator (e.g., "May 27th")
+   - Extract messages - you now have all messages from June 6th
+
+**How to Check Date Separators:**
+
+Use `mcp_chrome-devtools_take_snapshot()` and look for elements like:
+```
+listitem "Friday, June 6th Press enter to select a date to jump to." level="1" roledescription="separator"
+```
+
+The visible date separators tell you:
+- What dates have messages (separators are only shown for dates with messages)
+- What dates are missing (gaps between visible separators indicate no messages)
+- Whether you've scrolled far enough to capture all messages for a given day
 
 ## Troubleshooting
 

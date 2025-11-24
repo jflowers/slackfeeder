@@ -282,6 +282,26 @@ extract_and_save_dom_messages(
 
 When processing browser exports with `src/main.py --browser-export-dm`, **always specify `--browser-conversation-name`** with the actual conversation name (e.g., `--browser-conversation-name "Tara"`). The default "DM" is not allowed and will cause the script to fail. This ensures messages are organized in folders named after the actual conversation, matching the behavior of regular API exports.
 
+### Using Date Separators to Identify Gaps and Ensure Complete Coverage
+
+**Key Insight:** Slack displays date separators (e.g., "Friday, June 6th", "Tuesday, June 10th") in the DOM to mark when dates change. These separators are critical for efficient extraction:
+
+1. **Identifying True Date Gaps:** If two non-consecutive date separators are visible in the DOM (e.g., "June 27th" and "July 7th"), this indicates there are **no messages** for the dates between them. This allows you to skip unnecessary scrolling through date ranges with no messages.
+
+2. **Ensuring Complete Day Coverage:** When extracting messages for a specific date, check that the date separator for that day is visible in the DOM. If you see the separator (e.g., "Friday, June 6th"), scroll backward until you see the previous date separator to ensure you've captured all messages from that day.
+
+**How to Use Date Separators:**
+
+- **From Snapshots:** Use `mcp_chrome-devtools_take_snapshot()` and look for `listitem` elements with `roledescription="separator"` that contain date text like "Friday, June 6th Press enter to select a date to jump to."
+- **Identifying Gaps:** If you see "June 27th" followed by "July 7th" (with no dates in between), you can confidently skip scrolling through June 28-30 and July 1-6.
+- **Complete Day Extraction:** When extracting June 6th, ensure you see both "June 6th" separator and the previous date separator (e.g., "May 27th") to confirm you've captured all messages from June 6th.
+
+**Example Workflow:**
+1. Take a snapshot to see visible date separators
+2. Identify gaps: If "June 27th" and "July 7th" are both visible, skip June 28 - July 6
+3. For a target date (e.g., June 6th), scroll until you see both June 6th separator and the previous date separator
+4. Extract messages - you now have complete coverage for that day
+
 ## Common Pitfalls
 
 1. **Forgetting rate limits**: Always use rate limiting before API calls
@@ -292,6 +312,7 @@ When processing browser exports with `src/main.py --browser-export-dm`, **always
 6. **Creating temporary scripts**: Do NOT create wrapper scripts for DOM extraction - use MCP tools directly
 7. **Missing conversation name**: Always specify `--browser-conversation-name` when using `--browser-export-dm`. The default "DM" will cause the script to fail.
 8. **Using response_dom_extraction.json**: Do NOT create or use `response_dom_extraction.json` or any intermediate files. Browser exports use the same code path as `--export-history` and should pipe messages via stdin or pass them directly.
+9. **Not using date separators**: Always check date separators in snapshots to identify true gaps and ensure complete day coverage. Don't waste time scrolling through date ranges with no messages.
 
 ## When Making Changes
 

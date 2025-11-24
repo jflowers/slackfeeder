@@ -31,6 +31,8 @@ CODE_REVIEW*
 # Note: These patterns prevent creating temporary wrapper scripts
 scripts/extract_*_*.py
 scripts/run_extraction*.py
+# Person-specific combine/upload scripts (session-specific, not reusable)
+scripts/combine_and_upload_*_*.py
 session.log
 
 # OS-specific
@@ -46,6 +48,10 @@ slack_exports/
 browser_exports/
 token.json
 .env
+# Temporary data/output files (missing dates lists, filtered outputs, etc.)
+*_missing_dates.json
+*_filtered.json
+*_combined*.json
 
 # Google Drive credentials (keep example files in config/)
 *credentials*.json
