@@ -524,9 +524,10 @@ def _validate_conversation_id(conversation_id: str) -> bool:
     """
     if not conversation_id or not isinstance(conversation_id, str):
         return False
-    if len(conversation_id) < 9:
+    if len(conversation_id) < 2:
         return False
     # Slack IDs start with C (channel), D (DM), or G (group DM)
+    # followed by alphanumeric characters
     return conversation_id[0] in ['C', 'D', 'G'] and conversation_id[1:].isalnum()
 
 
