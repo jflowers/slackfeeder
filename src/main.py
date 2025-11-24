@@ -1429,6 +1429,10 @@ def upload_messages_to_drive(
             "upload_failed": 0,
             "total_messages": 0,
         }
+    # Ensure all required keys exist (for consistency)
+    for key in ["processed", "uploaded", "upload_failed", "total_messages"]:
+        if key not in stats:
+            stats[key] = 0
 
     # Group messages by date
     daily_groups = group_messages_by_date(messages)
@@ -1562,7 +1566,25 @@ Total Messages: {len(daily_messages)}
     return stats
 
 
-def _log_statistics(stats, upload_to_drive):
+def _initialize_stats() -> Dict[str, int]:
+    """Initialize statistics dictionary with default values.
+
+    Returns:
+        Statistics dictionary with all counters initialized to 0
+    """
+    return {
+        "processed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "uploaded": 0,
+        "upload_failed": 0,
+        "shared": 0,
+        "share_failed": 0,
+        "total_messages": 0,
+    }
+
+
+def _log_statistics(stats: Dict[str, int], upload_to_drive: bool) -> None:
     """Log export statistics.
 
     Args:
@@ -1571,15 +1593,16 @@ def _log_statistics(stats, upload_to_drive):
     """
     logger.info("=" * 80)
     logger.info("Export Statistics:")
-    logger.info(f"  Processed: {stats['processed']}")
-    logger.info(f"  Skipped: {stats['skipped']}")
-    logger.info(f"  Failed: {stats['failed']}")
+    logger.info(f"  Processed: {stats.get('processed', 0)}")
+    logger.info(f"  Skipped: {stats.get('skipped', 0)}")
+    logger.info(f"  Failed: {stats.get('failed', 0)}")
     if upload_to_drive:
-        logger.info(f"  Uploaded to Drive: {stats['uploaded']}")
-        logger.info(f"  Upload Failed: {stats['upload_failed']}")
-        logger.info(f"  Folders shared: {stats['shared']}")
-        logger.info(f"  Share Failed: {stats['share_failed']}")
-    logger.info(f"  Total messages processed: {stats['total_messages']}")
+        logger.info(f"  Uploaded to Drive: {stats.get('uploaded', 0)}")
+        logger.info(f"  Upload Failed: {stats.get('upload_failed', 0)}")
+        if 'shared' in stats:
+            logger.info(f"  Folders shared: {stats.get('shared', 0)}")
+            logger.info(f"  Share Failed: {stats.get('share_failed', 0)}")
+    logger.info(f"  Total messages processed: {stats.get('total_messages', 0)}")
     logger.info("=" * 80)
 
 
@@ -1679,16 +1702,7 @@ def main(args):
         output_dir = _setup_output_directory()
 
         # Initialize statistics tracking
-        stats = {
-            "processed": 0,
-            "skipped": 0,
-            "failed": 0,
-            "uploaded": 0,
-            "upload_failed": 0,
-            "shared": 0,
-            "share_failed": 0,
-            "total_messages": 0,
-        }
+        stats = _initialize_stats()
 
         total_conversations = len(channels_to_export)
         logger.info(f"Starting export of {total_conversations} conversation(s)")
