@@ -1108,6 +1108,113 @@ def _load_people_cache():
     return people_cache, no_notifications_set, no_share_set
 
 
+def get_oldest_timestamp_for_export(
+    google_drive_client: Optional[GoogleDriveClient],
+    folder_id: Optional[str],
+    conversation_name: str,
+    explicit_start_date: Optional[str],
+    upload_to_drive: bool,
+    sanitized_folder_name: Optional[str] = None,
+    safe_conversation_name: Optional[str] = None,
+) -> Optional[str]:
+    """Get oldest timestamp for incremental export.
+
+    Determines the oldest timestamp to use for fetching messages, considering:
+    1. Explicit --start-date if provided
+    2. Last export timestamp from Google Drive (if uploading to Drive)
+    3. Uses the later of the two to avoid missing messages
+
+    Args:
+        google_drive_client: Optional GoogleDriveClient instance (None if not uploading to Drive)
+        folder_id: Optional folder ID (may be None if folder not yet created)
+        conversation_name: Display name of the conversation
+        explicit_start_date: Optional explicit start date string (from --start-date)
+        upload_to_drive: Whether uploading to Drive (determines if we check Drive metadata)
+        sanitized_folder_name: Optional sanitized folder name (for creating folder if needed)
+        safe_conversation_name: Optional safe conversation name (for metadata lookup)
+
+    Returns:
+        Oldest timestamp string, or None if no limit (fetch all messages)
+    """
+    oldest_ts = None
+    explicit_start_ts = None
+
+    # Parse explicit start date if provided
+    if explicit_start_date:
+        explicit_start_ts = convert_date_to_timestamp(explicit_start_date)
+        if explicit_start_ts is None:
+            logger.error(f"Invalid start date format: {explicit_start_date}")
+            return None
+        logger.info(f"Explicit start date provided: {explicit_start_date} ({explicit_start_ts})")
+
+    # Check Google Drive for last export timestamp if uploading to Drive
+    if upload_to_drive and google_drive_client:
+        # Create or get folder if we don't have folder_id yet
+        if not folder_id and sanitized_folder_name:
+            folder_id = google_drive_client.create_folder(
+                sanitized_folder_name, None  # Will use default parent folder
+            )
+
+        if folder_id:
+            # Use safe_conversation_name if provided, otherwise sanitize conversation_name
+            if not safe_conversation_name:
+                safe_conversation_name = sanitize_filename(conversation_name)
+
+            last_export_ts = google_drive_client.get_latest_export_timestamp(
+                folder_id, safe_conversation_name
+            )
+
+            if last_export_ts:
+                # Use the later of explicit start date or last export timestamp
+                if explicit_start_ts:
+                    oldest_ts = max(explicit_start_ts, last_export_ts)
+                    if oldest_ts == last_export_ts:
+                        last_export_dt = datetime.fromtimestamp(
+                            float(last_export_ts), tz=timezone.utc
+                        )
+                        logger.info(
+                            f"Last export ({last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}) "
+                            f"is later than explicit start date. Using last export timestamp."
+                        )
+                    else:
+                        logger.info(
+                            f"Explicit start date is later than last export. Using explicit start date."
+                        )
+                else:
+                    oldest_ts = last_export_ts
+                    last_export_dt = datetime.fromtimestamp(
+                        float(last_export_ts), tz=timezone.utc
+                    )
+                    logger.info(
+                        f"Fetching messages since last export: {last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                    )
+            else:
+                # No previous export found - use explicit start date if provided
+                oldest_ts = explicit_start_ts
+                if oldest_ts:
+                    logger.info("No previous export found in Drive, using explicit start date")
+                else:
+                    logger.info("No previous export found in Drive, processing all messages")
+        else:
+            # Could not access/create folder - use explicit start date if provided
+            oldest_ts = explicit_start_ts
+            if oldest_ts:
+                logger.info("Could not access/create folder, using explicit start date")
+            else:
+                logger.info("Could not access/create folder, processing all messages")
+    else:
+        # Not uploading to Drive - use explicit start date if provided
+        oldest_ts = explicit_start_ts
+        if oldest_ts:
+            logger.info(f"Not uploading to Drive, using explicit start date: {explicit_start_date}")
+        else:
+            logger.info(
+                "Not uploading to Drive, processing all messages (use --start-date for incremental export)"
+            )
+
+    return oldest_ts
+
+
 def upload_messages_to_drive(
     messages: List[Dict[str, Any]],
     conversation_name: str,
@@ -1450,42 +1557,30 @@ def main(args):
             logger.info(f"--- Processing conversation: {channel_name} ({channel_id}) ---")
 
             # Determine oldest timestamp for incremental fetching
-            # If --start-date is explicitly provided, use it; otherwise check Google Drive for last export
-            oldest_ts = None
-            if args.start_date:
-                oldest_ts = convert_date_to_timestamp(args.start_date)
-                if oldest_ts is None:
-                    logger.error(f"Invalid start date format: {args.start_date}")
-                    stats["skipped"] += 1
-                    continue
-                logger.info(f"Using explicit start date: {args.start_date}")
-            elif args.upload_to_drive:
-                # Check Google Drive for last export timestamp (stateless - works in CI/CD)
-                sanitized_folder_name = sanitized_names["folder"]
-                safe_channel_name = sanitized_names["file"]
+            sanitized_folder_name = sanitized_names["folder"]
+            safe_channel_name = sanitized_names["file"]
+            
+            # Get folder ID early if uploading to Drive (needed for incremental export check)
+            folder_id = None
+            if args.upload_to_drive:
                 folder_id = google_drive_client.create_folder(
                     sanitized_folder_name, google_drive_folder_id
                 )
-                if folder_id:
-                    last_export_ts = google_drive_client.get_latest_export_timestamp(
-                        folder_id, safe_channel_name
-                    )
-                    if last_export_ts:
-                        oldest_ts = last_export_ts
-                        last_export_dt = datetime.fromtimestamp(
-                            float(last_export_ts), tz=timezone.utc
-                        )
-                        logger.info(
-                            f"Fetching messages since last export: {last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-                        )
-                    else:
-                        logger.info("No previous export found in Drive, fetching all messages")
-                else:
-                    logger.info("Could not access/create folder, fetching all messages")
-            else:
-                logger.info(
-                    "Not uploading to Drive, fetching all messages (use --start-date for incremental export)"
-                )
+
+            oldest_ts = get_oldest_timestamp_for_export(
+                google_drive_client=google_drive_client if args.upload_to_drive else None,
+                folder_id=folder_id,
+                conversation_name=channel_name,
+                explicit_start_date=args.start_date,
+                upload_to_drive=args.upload_to_drive,
+                sanitized_folder_name=sanitized_folder_name,
+                safe_conversation_name=safe_channel_name,
+            )
+            
+            if args.start_date and oldest_ts is None:
+                # Invalid start date format - skip this conversation
+                stats["skipped"] += 1
+                continue
 
             # Validate end date if provided
             latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
@@ -2182,24 +2277,13 @@ if __name__ == "__main__":
         logger.info(f"Filtered to {len(all_messages)} messages from conversation participants")
 
         # Determine oldest timestamp for incremental fetching
-        # Always check Google Drive for last export when uploading to Drive,
-        # even if --start-date is explicitly provided (use the later of the two)
-        oldest_ts = None
-        google_drive_client = None  # Will be initialized if needed for incremental export
+        # Initialize Google Drive client early if uploading to Drive (needed for incremental export check)
+        google_drive_client = None
         sanitized_folder_name = None
         safe_conversation_name = None
         google_drive_folder_id = None
+        folder_id = None
         
-        # Parse explicit start date if provided
-        explicit_start_ts = None
-        if args.start_date:
-            explicit_start_ts = convert_date_to_timestamp(args.start_date)
-            if explicit_start_ts is None:
-                logger.error(f"Invalid start date format: {args.start_date}")
-                sys.exit(1)
-            logger.info(f"Explicit start date provided: {args.start_date} ({explicit_start_ts})")
-        
-        # Check Google Drive for last export timestamp if uploading to Drive
         if args.upload_to_drive:
             # Initialize Google Drive client early to check for metadata
             google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
@@ -2231,57 +2315,22 @@ if __name__ == "__main__":
             folder_id = google_drive_client.create_folder(
                 sanitized_folder_name, google_drive_folder_id
             )
-            if folder_id:
-                last_export_ts = google_drive_client.get_latest_export_timestamp(
-                    folder_id, safe_conversation_name
-                )
-                if last_export_ts:
-                    # Use the later of explicit start date or last export timestamp
-                    if explicit_start_ts:
-                        oldest_ts = max(explicit_start_ts, last_export_ts)
-                        if oldest_ts == last_export_ts:
-                            last_export_dt = datetime.fromtimestamp(
-                                float(last_export_ts), tz=timezone.utc
-                            )
-                            logger.info(
-                                f"Last export ({last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}) "
-                                f"is later than explicit start date. Using last export timestamp."
-                            )
-                        else:
-                            logger.info(
-                                f"Explicit start date is later than last export. Using explicit start date."
-                            )
-                    else:
-                        oldest_ts = last_export_ts
-                        last_export_dt = datetime.fromtimestamp(
-                            float(last_export_ts), tz=timezone.utc
-                        )
-                        logger.info(
-                            f"Fetching messages since last export: {last_export_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-                        )
-                else:
-                    # No previous export found - use explicit start date if provided
-                    oldest_ts = explicit_start_ts
-                    if oldest_ts:
-                        logger.info("No previous export found in Drive, using explicit start date")
-                    else:
-                        logger.info("No previous export found in Drive, processing all messages")
-            else:
-                # Could not access/create folder - use explicit start date if provided
-                oldest_ts = explicit_start_ts
-                if oldest_ts:
-                    logger.info("Could not access/create folder, using explicit start date")
-                else:
-                    logger.info("Could not access/create folder, processing all messages")
-        else:
-            # Not uploading to Drive - use explicit start date if provided
-            oldest_ts = explicit_start_ts
-            if oldest_ts:
-                logger.info(f"Not uploading to Drive, using explicit start date: {args.start_date}")
-            else:
-                logger.info(
-                    "Not uploading to Drive, processing all messages (use --start-date for incremental export)"
-                )
+        
+        # Get oldest timestamp using unified function
+        oldest_ts = get_oldest_timestamp_for_export(
+            google_drive_client=google_drive_client,
+            folder_id=folder_id,
+            conversation_name=conversation_name,
+            explicit_start_date=args.start_date,
+            upload_to_drive=args.upload_to_drive,
+            sanitized_folder_name=sanitized_folder_name,
+            safe_conversation_name=safe_conversation_name,
+        )
+        
+        if args.start_date and oldest_ts is None:
+            # Invalid start date format
+            logger.error(f"Invalid start date format: {args.start_date}")
+            sys.exit(1)
 
         latest_ts = None
         if args.end_date:
