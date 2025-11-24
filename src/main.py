@@ -781,6 +781,290 @@ def _setup_output_directory():
     return output_dir
 
 
+def load_browser_export_config(config_path: str) -> Optional[Dict[str, Any]]:
+    """Load browser-export.json configuration file.
+    
+    Args:
+        config_path: Path to browser-export.json file
+        
+    Returns:
+        Dictionary with browser-export configuration, or None if not found/invalid
+    """
+    try:
+        config_data = load_json_file(config_path)
+        if not config_data:
+            logger.debug(f"Browser export config file not found: {config_path}")
+            return None
+        
+        browser_exports = config_data.get("browser-export", [])
+        if not isinstance(browser_exports, list):
+            logger.warning(f"Invalid browser-export.json structure: 'browser-export' must be a list")
+            return None
+        
+        return {"browser-export": browser_exports}
+    except Exception as e:
+        logger.warning(f"Error loading browser-export config: {e}")
+        return None
+
+
+def find_conversation_in_config(config_data: Dict[str, Any], conversation_id: str = None, conversation_name: str = None) -> Optional[Dict[str, Any]]:
+    """Find a conversation in browser-export.json by ID or name.
+    
+    Args:
+        config_data: Browser export config dictionary
+        conversation_id: Optional conversation ID to search for
+        conversation_name: Optional conversation name to search for
+        
+    Returns:
+        Conversation info dictionary, or None if not found
+    """
+    if not config_data:
+        return None
+    
+    browser_exports = config_data.get("browser-export", [])
+    if not browser_exports:
+        return None
+    
+    for conv in browser_exports:
+        if conversation_id and conv.get("id") == conversation_id:
+            return conv
+        if conversation_name and conv.get("name") == conversation_name:
+            return conv
+    
+    return None
+
+
+def select_conversation_from_sidebar(conversation_id: str) -> bool:
+    """Select a conversation from the Slack sidebar by clicking on it.
+    
+    This function uses MCP chrome-devtools tools to find and click on the conversation
+    in the sidebar. The conversation is identified by its div ID.
+    
+    Args:
+        conversation_id: Slack conversation ID (e.g., "D06DDJ2UH2M")
+        
+    Returns:
+        True if conversation was successfully selected, False otherwise
+        
+    Note:
+        This function requires MCP chrome-devtools tools to be available.
+        It should be called before extracting messages.
+    """
+    # This function will be called by the agent using MCP tools
+    # We can't call MCP tools directly here, so we'll document the approach
+    # and the agent will implement it using mcp_chrome-devtools tools
+    
+    logger.info(f"To select conversation {conversation_id} from sidebar:")
+    logger.info("1. Take a snapshot of the page")
+    logger.info("2. Find the div with id matching conversation_id")
+    logger.info("3. Find the parent treeitem element")
+    logger.info("4. Click on the treeitem or its button/link child")
+    logger.info("5. Wait for the conversation to load")
+    
+    # The actual implementation will be done by the agent using MCP tools
+    return True
+
+
+def share_folder_for_browser_export(
+    google_drive_client: GoogleDriveClient,
+    folder_id: str,
+    slack_client: SlackClient,
+    conversation_info: Dict[str, Any],
+    conversation_name: str,
+    no_notifications_set: set,
+    no_share_set: set,
+    stats: Dict[str, int],
+) -> None:
+    """Share a Google Drive folder for browser export using the same logic as Slack export.
+    
+    Args:
+        google_drive_client: GoogleDriveClient instance
+        folder_id: Google Drive folder ID
+        slack_client: SlackClient instance (required for member lookup)
+        conversation_info: Conversation info from browser-export.json
+        conversation_name: Display name of the conversation
+        no_notifications_set: Set of emails who opted out of notifications
+        no_share_set: Set of emails who opted out of being shared with
+        stats: Statistics dictionary to update
+    """
+    # Check if sharing is enabled
+    should_share = conversation_info.get("share", True)
+    if not should_share:
+        logger.info(f"Sharing disabled for {conversation_name} (share: false in browser-export.json)")
+        return
+    
+    # Get conversation ID
+    conversation_id = conversation_info.get("id")
+    if not conversation_id:
+        logger.warning(f"No conversation ID found for {conversation_name}. Cannot share.")
+        return
+    
+    # Get members - for browser exports, we need to use Slack API
+    # For DMs (is_im), get the other user
+    # For group DMs (is_mpim), get all members
+    members = []
+    if conversation_info.get("is_im"):
+        # DM - get the other user
+        other_user_id = conversation_info.get("user")
+        if other_user_id:
+            members = [other_user_id]
+        else:
+            # Try to get from conversation ID (DM IDs start with D)
+            # For DMs, we need to use conversations.info to get the user
+            try:
+                conv_info = slack_client.client.conversations_info(channel=conversation_id)
+                if conv_info.get("ok"):
+                    user_id = conv_info.get("channel", {}).get("user")
+                    if user_id:
+                        members = [user_id]
+            except Exception as e:
+                logger.warning(f"Could not get user for DM {conversation_id}: {e}")
+    elif conversation_info.get("is_mpim"):
+        # Group DM - get all members
+        members = slack_client.get_channel_members(conversation_id)
+    
+    if not members:
+        logger.warning(f"No members found for {conversation_name}. Skipping sharing.")
+        return
+    
+    # Get shareMembers list if provided
+    share_members = conversation_info.get("shareMembers")
+    # Validate shareMembers is a list if provided
+    if share_members is not None:
+        if not isinstance(share_members, list):
+            logger.warning(
+                f"shareMembers must be a list for {conversation_name}, got {type(share_members).__name__}. Ignoring."
+            )
+            share_members = None
+        elif len(share_members) == 0:
+            # Empty list = share with all (backward compatible)
+            share_members = None
+    if share_members:
+        logger.info(
+            f"Selective sharing enabled for {conversation_name}: sharing with {len(share_members)} specified member(s)"
+        )
+    
+    # Get current folder permissions to identify who should have access removed
+    current_permissions = google_drive_client.get_folder_permissions(folder_id)
+    current_member_emails = set()
+    
+    # Build set of current member emails (only those who should have access)
+    for member_id in members:
+        user_info = slack_client.get_user_info(member_id)
+        if user_info and user_info.get("email"):
+            email = user_info["email"]
+            if validate_email(email):
+                # Check if member should be shared with (respects shareMembers and no_share_set)
+                if email.lower() not in no_share_set:
+                    if _should_share_with_member(member_id, user_info, share_members):
+                        current_member_emails.add(email.lower())
+    
+    # Revoke access for people who are no longer members
+    revoked_count = 0
+    revoke_errors = []
+    for perm in current_permissions:
+        # Only revoke user permissions (not owner, domain, etc.)
+        if perm.get("type") != "user":
+            continue
+        
+        # Don't revoke owner permissions
+        if perm.get("role") == "owner":
+            continue
+        
+        perm_email = perm.get("emailAddress", "").lower()
+        if not perm_email:
+            continue
+        
+        # If this email is not in current members, revoke access
+        if perm_email not in current_member_emails:
+            try:
+                # Rate limit revoke operations
+                if revoked_count > 0 and revoked_count % SHARE_RATE_LIMIT_INTERVAL == 0:
+                    time.sleep(SHARE_RATE_LIMIT_DELAY)
+                
+                revoked = google_drive_client.revoke_folder_access(folder_id, perm_email)
+                if revoked:
+                    revoked_count += 1
+                else:
+                    revoke_errors.append(f"{perm_email}: revoke failed")
+            except Exception as e:
+                revoke_errors.append(f"{perm_email}: {str(e)}")
+    
+    if revoked_count > 0:
+        logger.info(f"Revoked access for {revoked_count} user(s) no longer in {conversation_name}")
+    if revoke_errors:
+        logger.warning(f"Failed to revoke access for some users: {', '.join(revoke_errors)}")
+    
+    # Share with current members
+    shared_emails = set()
+    share_errors = []
+    share_failures = 0
+    excluded_count = 0
+    for i, member_id in enumerate(members):
+        # Rate limit: pause every N shares to avoid API limits
+        if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
+            time.sleep(SHARE_RATE_LIMIT_DELAY)
+        
+        user_info = slack_client.get_user_info(member_id)
+        if user_info and user_info.get("email"):
+            email = user_info["email"]
+            # Validate email format
+            if not validate_email(email):
+                logger.warning(f"Invalid email format: {email}. Skipping.")
+                continue
+            
+            # Skip if user has opted out of being shared with
+            if email.lower() in no_share_set:
+                logger.debug(f"User {email} has opted out of being shared with, skipping")
+                excluded_count += 1
+                continue
+            
+            # Check if member should be shared with based on shareMembers list
+            if not _should_share_with_member(member_id, user_info, share_members):
+                logger.debug(
+                    f"User {email} ({user_info.get('displayName', member_id)}) not in shareMembers list, skipping"
+                )
+                excluded_count += 1
+                continue
+            
+            if email not in shared_emails:
+                try:
+                    # Check if user has opted out of notifications
+                    send_notification = email.lower() not in no_notifications_set
+                    if not send_notification:
+                        logger.debug(
+                            f"User {email} has opted out of notifications, sharing without notification"
+                        )
+                    
+                    shared = google_drive_client.share_folder(
+                        folder_id, email, send_notification=send_notification
+                    )
+                    if shared:
+                        shared_emails.add(email)
+                        stats["shared"] += 1
+                    else:
+                        share_errors.append(f"{email}: share failed")
+                        share_failures += 1
+                except Exception as e:
+                    share_errors.append(f"{email}: {str(e)}")
+                    share_failures += 1
+    
+    stats["share_failed"] += share_failures
+    
+    if share_errors:
+        logger.warning(f"Failed to share with some users: {', '.join(share_errors)}")
+    
+    # Log summary
+    if share_members:
+        logger.info(
+            f"Selective sharing complete: shared with {len(shared_emails)} of {len(members)} conversation members"
+        )
+        if excluded_count > 0:
+            logger.info(f"Excluded {excluded_count} member(s) not in shareMembers list")
+    else:
+        logger.info(f"Shared folder with {len(shared_emails)} participants")
+
+
 def _load_people_cache():
     """Load people.json cache and opt-out sets.
 
@@ -1594,6 +1878,25 @@ if __name__ == "__main__":
         type=str,
         help="Optional conversation ID for browser export metadata.",
     )
+    parser.add_argument(
+        "--browser-export-config",
+        type=str,
+        required=False,  # Will be checked in code for browser-export-dm
+        help="Path to browser-export.json config file (REQUIRED for --browser-export-dm).",
+    )
+    parser.add_argument(
+        "--select-conversation",
+        action="store_true",
+        help="Select conversation from sidebar before extraction (default: True). Requires browser to be open.",
+    )
+    parser.add_argument(
+        "--no-select-conversation",
+        dest="select_conversation",
+        action="store_false",
+        help="Disable automatic conversation selection from sidebar. Use this if you've already navigated to the conversation manually.",
+    )
+    # Set default to True after adding both arguments
+    parser.set_defaults(select_conversation=True)
 
     args = parser.parse_args()
 
@@ -1652,22 +1955,90 @@ if __name__ == "__main__":
         from src.browser_response_processor import BrowserResponseProcessor
         from src.browser_scraper import extract_messages_from_dom
 
-        conversation_name = args.browser_conversation_name
-        
-        # Require explicit conversation name - fail if still using default "DM"
-        # This ensures messages are organized in folders named after the actual conversation
-        if conversation_name == "DM":
+        # Require browser-export.json config file
+        if not args.browser_export_config:
             logger.error(
-                "ERROR: --browser-conversation-name is required and must specify the actual conversation name."
+                "ERROR: --browser-export-config is required for browser exports."
             )
             logger.error(
-                "The default 'DM' is not allowed. Regular exports automatically detect conversation names, "
-                "but browser exports require explicit specification."
+                "Browser exports require browser-export.json to ensure consistent naming and sharing."
             )
             logger.error(
-                f"Example: --browser-conversation-name 'Tara'"
+                f"Example: --browser-export-config config/browser-export.json"
             )
             sys.exit(1)
+        
+        # Load browser-export.json config
+        config_data = load_browser_export_config(args.browser_export_config)
+        if not config_data:
+            logger.error(
+                f"ERROR: Failed to load browser-export.json from {args.browser_export_config}"
+            )
+            logger.error(
+                "Ensure the file exists and has valid JSON structure with 'browser-export' array."
+            )
+            sys.exit(1)
+        
+        # Find conversation in config by ID or name
+        conversation_info = None
+        if args.browser_conversation_id:
+            conversation_info = find_conversation_in_config(config_data, conversation_id=args.browser_conversation_id)
+        if not conversation_info and args.browser_conversation_name and args.browser_conversation_name != "DM":
+            conversation_info = find_conversation_in_config(config_data, conversation_name=args.browser_conversation_name)
+        
+        if not conversation_info:
+            logger.error(
+                f"ERROR: Conversation not found in browser-export.json"
+            )
+            if args.browser_conversation_id:
+                logger.error(f"  Searched by ID: {args.browser_conversation_id}")
+            if args.browser_conversation_name and args.browser_conversation_name != "DM":
+                logger.error(f"  Searched by name: {args.browser_conversation_name}")
+            logger.error(
+                "Ensure the conversation exists in browser-export.json with matching ID or name."
+            )
+            sys.exit(1)
+        
+        # Always use conversation name and ID from config (ensures consistency)
+        conversation_name = conversation_info.get("name")
+        if not conversation_name:
+            logger.error(
+                f"ERROR: Conversation in browser-export.json is missing 'name' field"
+            )
+            sys.exit(1)
+        
+        # Always use ID from config
+        args.browser_conversation_id = conversation_info.get("id")
+        if not args.browser_conversation_id:
+            logger.error(
+                f"ERROR: Conversation in browser-export.json is missing 'id' field"
+            )
+            sys.exit(1)
+        
+        logger.info(f"Using conversation from config: {conversation_name} ({args.browser_conversation_id})")
+        
+        # Warn if user provided --browser-conversation-name that doesn't match config
+        if args.browser_conversation_name and args.browser_conversation_name != "DM" and args.browser_conversation_name != conversation_name:
+            logger.warning(
+                f"Provided --browser-conversation-name '{args.browser_conversation_name}' doesn't match config name '{conversation_name}'. "
+                f"Using config name '{conversation_name}' for consistency."
+            )
+        
+        # If --select-conversation is enabled, select conversation from sidebar
+        if args.select_conversation:
+            if not args.browser_conversation_id:
+                logger.warning("--select-conversation enabled but no conversation ID found. Skipping selection.")
+                logger.warning("Provide --browser-conversation-id or use --browser-export-config to enable automatic selection.")
+            else:
+                logger.info(f"Selecting conversation {args.browser_conversation_id} from sidebar...")
+                # Note: Actual selection will be done by agent using MCP chrome-devtools tools
+                # This is a placeholder - the agent should implement the selection logic
+                # If selection fails, the agent should log a warning but continue with extraction
+                try:
+                    select_conversation_from_sidebar(args.browser_conversation_id)
+                except Exception as e:
+                    logger.warning(f"Failed to select conversation from sidebar: {e}")
+                    logger.warning("Continuing with extraction - ensure browser is positioned on the correct conversation.")
 
         logger.info("Browser-based DM export mode (DOM extraction)")
         logger.info(f"Conversation name: {conversation_name}")
@@ -2029,12 +2400,45 @@ Total Messages: {len(daily_messages)}
                 )
                 logger.info(f"Saved export metadata for {conversation_name}")
 
+            # Share folder with members (same logic as Slack export)
+            if conversation_info and args.upload_to_drive:
+                # Initialize Slack client for sharing (required for member lookup)
+                slack_bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+                if slack_bot_token:
+                    try:
+                        slack_client = SlackClient(slack_bot_token)
+                        # Load people cache and opt-out sets
+                        people_cache, no_notifications_set, no_share_set = _load_people_cache()
+                        
+                        # Add sharing stats to stats dict
+                        stats["shared"] = 0
+                        stats["share_failed"] = 0
+                        
+                        # Share folder using same logic as Slack export
+                        share_folder_for_browser_export(
+                            google_drive_client,
+                            folder_id,
+                            slack_client,
+                            conversation_info,
+                            conversation_name,
+                            no_notifications_set,
+                            no_share_set,
+                            stats,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to share folder (Slack client error): {e}")
+                else:
+                    logger.warning("SLACK_BOT_TOKEN not set - skipping folder sharing. Set token to enable sharing.")
+
             # Log statistics
             logger.info("=" * 80)
             logger.info("Export Statistics:")
             logger.info(f"  Processed: {stats['processed']}")
             logger.info(f"  Uploaded to Drive: {stats['uploaded']}")
             logger.info(f"  Upload Failed: {stats['upload_failed']}")
+            if 'shared' in stats:
+                logger.info(f"  Folders shared: {stats['shared']}")
+                logger.info(f"  Share Failed: {stats['share_failed']}")
             logger.info(f"  Total messages processed: {stats['total_messages']}")
             logger.info("=" * 80)
 

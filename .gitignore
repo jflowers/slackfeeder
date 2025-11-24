@@ -56,3 +56,5 @@ token.json
 # Google Drive credentials (keep example files in config/)
 *credentials*.json
 !config/
+my_peeps.json
+browser-export.json

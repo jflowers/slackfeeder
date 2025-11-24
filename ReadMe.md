@@ -335,6 +335,7 @@ This method doesn't require a Slack bot token or app setup - it uses your existi
 - Chrome or Chromium browser with DevTools Protocol access
 - chrome-devtools MCP server configured in Cursor
 - Browser session with Slack conversation open
+- `config/browser-export.json` configuration file (see Configuration section below)
 
 ### Setup
 
@@ -383,11 +384,51 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
 - You can use this Chrome instance normally - navigate to Slack, log in, and open the conversation you want to export
 - The MCP server will connect to this Chrome instance via the DevTools Protocol on port 9222
 
+#### 3. Configure browser-export.json
+
+Create `config/browser-export.json` with your conversations to export. This file works similarly to `channels.json` for Slack API exports:
+
+```json
+{
+    "browser-export": [
+        {
+            "id": "D06DDJ2UH2M",
+            "name": "Alex Xuan, Jay Flowers",
+            "is_im": true,
+            "is_mpim": false,
+            "export": true,
+            "share": true,
+            "shareMembers": []
+        },
+        {
+            "id": "C073BC2HHUZ",
+            "name": "Emily Fox, Jenn Power, Jay Flowers",
+            "is_im": false,
+            "is_mpim": true,
+            "export": true,
+            "share": true,
+            "shareMembers": ["emily.fox@example.com", "jenn.power@example.com"]
+        }
+    ]
+}
+```
+
+**Fields:**
+- `id`: Slack conversation ID (required)
+- `name`: Conversation display name (required) - used for folder naming in Google Drive
+- `is_im`: Boolean indicating if it's a direct message
+- `is_mpim`: Boolean indicating if it's a group message
+- `export`: Boolean indicating if this conversation should be exported (default: true)
+- `share`: Boolean indicating if the folder should be shared with participants (default: true)
+- `shareMembers`: Optional array of user IDs, emails, or display names for selective sharing
+
+**Note:** The conversation name from `browser-export.json` will always be used for folder naming, ensuring consistency. You can enumerate conversations from your Slack sidebar using the MCP chrome-devtools tools (see `AGENTS.md` for details).
+
 ### Usage
 
 **Before starting:** Ensure Chrome is running with remote debugging (see Setup above) and the chrome-devtools MCP server is configured in Cursor.
 
-1. **Open Slack DM in browser** - Navigate to the DM conversation you want to export in the Chrome window you started with remote debugging
+1. **Open Slack in browser** - Navigate to Slack in the Chrome window you started with remote debugging. The conversation will be automatically selected from the sidebar (enabled by default).
 
 2. **Extract messages from DOM** - This step can be done in two ways:
 
@@ -428,20 +469,21 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-s
 3. **Process and upload to Google Drive**:
    ```bash
    python src/main.py --browser-export-dm --upload-to-drive \
-     --browser-response-dir browser_exports \
-     --browser-conversation-name "Tara" \
+     --browser-export-config config/browser-export.json \
+     --browser-conversation-name "Tara, Jay Flowers" \
      --start-date 2025-11-01 \
      --end-date 2025-11-18
    ```
    Or process locally without Google Drive:
    ```bash
    python src/main.py --browser-export-dm \
-     --browser-response-dir browser_exports \
-     --browser-output-dir slack_exports \
-     --browser-conversation-name "Tara" \
+     --browser-export-config config/browser-export.json \
+     --browser-conversation-name "Tara, Jay Flowers" \
      --start-date 2025-11-01 \
      --end-date 2025-11-18
    ```
+   
+   **Note:** `--browser-export-config` is **required**. The conversation name from config (e.g., "Tara, Jay Flowers") will be used for folder naming, ensuring consistency.
 
 ### Command-Line Options
 
@@ -450,21 +492,23 @@ python src/main.py --browser-export-dm [OPTIONS]
 ```
 
 **Options:**
-- `--browser-response-dir DIR` - Directory containing DOM extraction file (default: `browser_exports`)
-- `--browser-output-dir DIR` - Directory to write export files when not using `--upload-to-drive` (default: `slack_exports`)
-- `--browser-conversation-name NAME` - **REQUIRED**: Name for the conversation (used in filenames and folder name). Must specify the actual conversation name (e.g., "Tara"). The default "DM" is not allowed and will cause the script to fail.
-- `--browser-conversation-id ID` - Optional conversation ID for metadata
+- `--browser-export-config PATH` - **REQUIRED**: Path to browser-export.json config file (e.g., `config/browser-export.json`)
+- `--browser-conversation-name NAME` - Optional: Used to find conversation in config. The actual name from config will be used for folder naming.
+- `--browser-conversation-id ID` - Optional: Used to find conversation in config. The actual ID from config will be used.
+- `--select-conversation` - Select conversation from sidebar before extraction (default: True, use `--no-select-conversation` to disable)
 - `--start-date DATE` - Filter messages from this date (YYYY-MM-DD format, optional)
 - `--end-date DATE` - Filter messages until this date (YYYY-MM-DD format, optional)
 - `--upload-to-drive` - Upload to Google Drive as Google Docs (same format as Slack App export)
+
+**Important:** The conversation name from `browser-export.json` will always be used for folder naming (e.g., "Tara, Jay Flowers"), ensuring consistency with your configuration. If you provide `--browser-conversation-name`, it's only used to find the conversation in config.
 
 **Date Range Filtering and Incremental Exports:**
 You can filter messages by date range when processing extracted messages:
 ```bash
 # Export only messages from October 2024
 python src/main.py --browser-export-dm \
-  --browser-response-dir browser_exports/api_responses \
-  --browser-conversation-name "Tara" \
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-name "Tara, Jay Flowers" \
   --start-date "2024-10-01" \
   --end-date "2024-10-31"
 ```
@@ -476,13 +520,13 @@ The browser export supports incremental exports just like the main Slack App exp
 ```bash
 # First export - exports all messages
 python src/main.py --browser-export-dm --upload-to-drive \
-  --browser-response-dir browser_exports \
-  --browser-conversation-name "Tara"
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-name "Tara, Jay Flowers"
 
 # Second export - automatically picks up from last export (no --start-date needed)
 python src/main.py --browser-export-dm --upload-to-drive \
-  --browser-response-dir browser_exports \
-  --browser-conversation-name "Tara"
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-name "Tara, Jay Flowers"
 ```
 
 The incremental export feature:
@@ -497,9 +541,11 @@ The incremental export feature:
 When using `--upload-to-drive`, the browser export:
 - Creates Google Docs with the same naming convention: `{conversation_name} slack messages {yyyymmdd}`
 - Uses the same format as Slack App export (thread grouping, timestamps, etc.)
-- Creates folders named with the conversation name
+- Creates folders named with the conversation name from `browser-export.json` (e.g., "Tara, Jay Flowers")
 - Supports incremental updates (appends to existing docs)
 - Saves export metadata for future incremental exports
+- **Shares folders with participants** using the same logic as Slack API exports (requires `SLACK_BOT_TOKEN`)
+- Respects `share` and `shareMembers` settings from `browser-export.json`
 - Requires `GOOGLE_DRIVE_CREDENTIALS_FILE` environment variable
 
 ### Output Format
@@ -518,7 +564,9 @@ Each file contains messages from that date, formatted with:
 **Google Drive (with `--upload-to-drive`):**
 Google Docs are created with format: `{conversation_name} slack messages {yyyymmdd}`
 
-Example: `Tara slack messages 20241018`
+Example: `Tara, Jay Flowers slack messages 20241018`
+
+The conversation name comes from `browser-export.json`, ensuring consistent folder and file naming.
 
 Each Google Doc contains:
 - Metadata header (for new docs): Channel name, export date, message count
@@ -995,6 +1043,7 @@ python scripts/combine_batches.py \
 # Then process the combined file
 cat browser_exports/conversation_combined.json | \
   python src/main.py --browser-export-dm --upload-to-drive \
+    --browser-export-config config/browser-export.json \
     --browser-conversation-name "Conversation Name"
 ```
 

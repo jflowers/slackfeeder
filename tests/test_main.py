@@ -4,6 +4,7 @@ Unit tests for main.py functions.
 Tests cover preprocessing and conversation display name logic.
 """
 
+import json
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
@@ -12,8 +13,10 @@ import pytest
 from src.main import (
     _should_share_with_member,
     estimate_file_size,
+    find_conversation_in_config,
     get_conversation_display_name,
     group_messages_by_date,
+    load_browser_export_config,
     preprocess_history,
     replace_user_ids_in_text,
     should_chunk_export,
@@ -880,3 +883,135 @@ class TestEstimateFileSize:
         text = "A" * 10000
         result = estimate_file_size(text)
         assert result == 10000  # Each 'A' is 1 byte in UTF-8
+
+
+class TestLoadBrowserExportConfig:
+    """Tests for load_browser_export_config function."""
+
+    def test_load_valid_config(self, tmp_path):
+        """Test loading a valid browser-export.json file."""
+        config_file = tmp_path / "browser-export.json"
+        config_data = {
+            "browser-export": [
+                {
+                    "id": "D06DDJ2UH2M",
+                    "name": "Alex Xuan, Jay Flowers",
+                    "is_im": True,
+                    "is_mpim": False,
+                    "export": True,
+                    "share": True,
+                }
+            ]
+        }
+        config_file.write_text(json.dumps(config_data))
+
+        result = load_browser_export_config(str(config_file))
+        assert result is not None
+        assert "browser-export" in result
+        assert len(result["browser-export"]) == 1
+        assert result["browser-export"][0]["id"] == "D06DDJ2UH2M"
+
+    def test_load_nonexistent_file(self):
+        """Test loading a nonexistent config file."""
+        result = load_browser_export_config("nonexistent.json")
+        assert result is None
+
+    def test_load_missing_browser_export_key(self, tmp_path):
+        """Test loading config with missing browser-export key."""
+        config_file = tmp_path / "browser-export.json"
+        config_file.write_text('{"invalid": "structure"}')
+
+        result = load_browser_export_config(str(config_file))
+        # Function returns {"browser-export": []} when browser-export key is missing
+        # (uses default empty list)
+        assert result is not None
+        assert "browser-export" in result
+        assert result["browser-export"] == []
+
+    def test_load_not_list(self, tmp_path):
+        """Test loading config where browser-export is not a list."""
+        config_file = tmp_path / "browser-export.json"
+        config_file.write_text('{"browser-export": "not a list"}')
+
+        result = load_browser_export_config(str(config_file))
+        assert result is None
+
+
+class TestFindConversationInConfig:
+    """Tests for find_conversation_in_config function."""
+
+    def test_find_by_id(self):
+        """Test finding conversation by ID."""
+        config_data = {
+            "browser-export": [
+                {
+                    "id": "D06DDJ2UH2M",
+                    "name": "Alex Xuan, Jay Flowers",
+                    "is_im": True,
+                },
+                {
+                    "id": "C073BC2HHUZ",
+                    "name": "Emily Fox, Jenn Power, Jay Flowers",
+                    "is_mpim": True,
+                },
+            ]
+        }
+
+        result = find_conversation_in_config(config_data, conversation_id="D06DDJ2UH2M")
+        assert result is not None
+        assert result["id"] == "D06DDJ2UH2M"
+        assert result["name"] == "Alex Xuan, Jay Flowers"
+
+    def test_find_by_name(self):
+        """Test finding conversation by name."""
+        config_data = {
+            "browser-export": [
+                {
+                    "id": "D06DDJ2UH2M",
+                    "name": "Alex Xuan, Jay Flowers",
+                    "is_im": True,
+                },
+            ]
+        }
+
+        result = find_conversation_in_config(
+            config_data, conversation_name="Alex Xuan, Jay Flowers"
+        )
+        assert result is not None
+        assert result["id"] == "D06DDJ2UH2M"
+        assert result["name"] == "Alex Xuan, Jay Flowers"
+
+    def test_find_not_found(self):
+        """Test finding conversation that doesn't exist."""
+        config_data = {"browser-export": []}
+
+        result = find_conversation_in_config(config_data, conversation_id="INVALID")
+        assert result is None
+
+    def test_find_empty_config(self):
+        """Test finding in empty config."""
+        result = find_conversation_in_config(None, conversation_id="D06DDJ2UH2M")
+        assert result is None
+
+    def test_find_prefers_id_over_name(self):
+        """Test that ID search takes precedence."""
+        config_data = {
+            "browser-export": [
+                {
+                    "id": "D06DDJ2UH2M",
+                    "name": "Alex Xuan, Jay Flowers",
+                    "is_im": True,
+                },
+                {
+                    "id": "C073BC2HHUZ",
+                    "name": "Alex Xuan, Jay Flowers",  # Same name, different ID
+                    "is_mpim": True,
+                },
+            ]
+        }
+
+        result = find_conversation_in_config(
+            config_data, conversation_id="D06DDJ2UH2M", conversation_name="Alex Xuan, Jay Flowers"
+        )
+        assert result is not None
+        assert result["id"] == "D06DDJ2UH2M"  # Should find by ID first

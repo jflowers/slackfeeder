@@ -260,27 +260,82 @@ When extracting messages from Slack DOM using Cursor's MCP chrome-devtools tools
 - Same file naming conventions: `{conversation_name} slack messages {YYYYMMDD}`
 - Same grouping logic: `group_messages_by_date()` from `main.py`
 - Same formatting logic: `preprocess_history()` with `use_display_names=True`
+- Same sharing logic: Uses `share_folder_for_browser_export()` which mirrors `share_folder_with_members()`
 - Messages should be piped directly via stdin or passed programmatically
 
 **Workflow:**
-1. Extract messages from DOM using MCP chrome-devtools tools
-2. Pipe messages directly to `main.py` via stdin (JSON format)
-3. Or call extraction function programmatically and pass messages directly
-4. `main.py` processes messages using the same logic as `--export-history`
+1. **Load conversation info** from `config/browser-export.json` (optional but recommended)
+2. **Select conversation** from sidebar (enabled by default, use `--no-select-conversation` to disable)
+3. Extract messages from DOM using MCP chrome-devtools tools
+4. Pipe messages directly to `main.py` via stdin (JSON format)
+5. `main.py` processes messages using the same logic as `--export-history`
+6. **Share folder** with participants using same logic as Slack API exports
 
-**Example:**
-```python
-# Extract messages and pipe to main.py (no file created)
-extract_and_save_dom_messages(
-    mcp_evaluate_script, mcp_press_key,
-    output_file=None,  # No file created
-    output_to_stdout=True  # Pipe to main.py
-)
+**Using browser-export.json:**
+
+The `config/browser-export.json` file works similarly to `channels.json` for Slack API exports:
+
+```json
+{
+    "browser-export": [
+        {
+            "id": "D06DDJ2UH2M",
+            "name": "Alex Xuan, Jay Flowers",
+            "is_im": true,
+            "is_mpim": false,
+            "export": true,
+            "share": true,
+            "shareMembers": ["alex.xuan@example.com"]
+        }
+    ]
+}
 ```
 
-**⚠️ IMPORTANT: Always specify `--browser-conversation-name`**
+**Benefits:**
+- Automatic conversation selection via `--select-conversation`
+- Consistent sharing logic with Slack API exports
+- Selective sharing via `shareMembers` list
+- Respects `people.json` opt-out preferences
 
-When processing browser exports with `src/main.py --browser-export-dm`, **always specify `--browser-conversation-name`** with the actual conversation name (e.g., `--browser-conversation-name "Tara"`). The default "DM" is not allowed and will cause the script to fail. This ensures messages are organized in folders named after the actual conversation, matching the behavior of regular API exports.
+**Example with browser-export.json:**
+```bash
+python src/main.py --browser-export-dm --upload-to-drive \
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-name "Alex Xuan, Jay Flowers" \
+  --start-date 2023-11-29 \
+  --end-date 2024-06-05
+```
+Note: `--select-conversation` is enabled by default. Use `--no-select-conversation` if you've already navigated to the conversation manually.
+
+**Selecting Conversations from Sidebar:**
+
+Conversation selection is enabled by default. When enabled, the agent should:
+1. Take a snapshot using `mcp_chrome-devtools_take_snapshot()`
+2. Find the div element with `id` matching the conversation ID
+3. Find the parent `treeitem` element
+4. Click on the `button` or `link` within the treeitem
+5. Wait for the conversation to load
+
+**When to disable selection:**
+- If you've already manually navigated to the conversation
+- If the browser sidebar is not visible or accessible
+- If you're running in a headless environment where sidebar interaction isn't possible
+
+Use `--no-select-conversation` to disable automatic selection in these cases.
+
+**Sharing Logic:**
+
+Browser exports use the same sharing logic as Slack API exports:
+- Checks `share` flag from `browser-export.json`
+- Respects `shareMembers` list for selective sharing
+- Checks `people.json` for `noShare` and `noNotifications` preferences
+- Requires `SLACK_BOT_TOKEN` for member email lookup
+
+**⚠️ IMPORTANT: `--browser-export-config` is REQUIRED**
+
+When processing browser exports with `src/main.py --browser-export-dm`, **you must specify `--browser-export-config`** pointing to your browser-export.json file. The conversation name from the config file will be used for folder naming (e.g., `"Tara, Jay Flowers"`), ensuring consistency with your configuration.
+
+You can optionally provide `--browser-conversation-name` or `--browser-conversation-id` to help find the conversation in config, but the actual name from browser-export.json will always be used for folder naming.
 
 ### Using Date Separators to Identify Gaps and Ensure Complete Coverage
 
@@ -310,9 +365,11 @@ When processing browser exports with `src/main.py --browser-export-dm`, **always
 4. **State management**: Don't create local state files - use Drive metadata
 5. **Error handling**: Distinguish between `None` (API error) and `[]` (no messages)
 6. **Creating temporary scripts**: Do NOT create wrapper scripts for DOM extraction - use MCP tools directly
-7. **Missing conversation name**: Always specify `--browser-conversation-name` when using `--browser-export-dm`. The default "DM" will cause the script to fail.
+7. **Missing conversation name**: Always specify `--browser-conversation-name` when using `--browser-export-dm`. The default "DM" will cause the script to fail. Alternatively, use `--browser-export-config` to load from `browser-export.json`.
 8. **Using response_dom_extraction.json**: Do NOT create or use `response_dom_extraction.json` or any intermediate files. Browser exports use the same code path as `--export-history` and should pipe messages via stdin or pass them directly.
-9. **Not using date separators**: Always check date separators in snapshots to identify true gaps and ensure complete day coverage. Don't waste time scrolling through date ranges with no messages.
+9. **Not using browser-export.json**: Consider using `--browser-export-config` and `--select-conversation` for automatic conversation selection and consistent sharing logic.
+10. **Sharing without SLACK_BOT_TOKEN**: Browser exports require `SLACK_BOT_TOKEN` to share folders with participants. Without it, sharing will be skipped with a warning.
+11. **Not using date separators**: Always check date separators in snapshots to identify true gaps and ensure complete day coverage. Don't waste time scrolling through date ranges with no messages.
 
 ## When Making Changes
 

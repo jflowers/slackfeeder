@@ -36,10 +36,27 @@ The `scripts/extract_dom_messages.py` script exists but **cannot be used directl
 ### Step 1: Position Browser
 
 1. Open Slack in Chrome with remote debugging enabled
-2. Navigate to the DM conversation you want to export
-3. Scroll to the starting point (e.g., if extracting from Nov 1st, scroll to Nov 1st)
+2. **Option A: Manual Navigation**
+   - Navigate to the DM conversation you want to export
+   - Scroll to the starting point (e.g., if extracting from Nov 1st, scroll to Nov 1st)
+3. **Option B: Use browser-export.json (Recommended)**
+   - Use `--browser-export-config config/browser-export.json` to load conversation info
+   - Conversation will be automatically selected from sidebar (default behavior)
+   - The agent will click on the conversation in the sidebar before extraction
+   - Use `--no-select-conversation` if you've already navigated manually
 
-### Step 2: Extract Messages Incrementally
+### Step 2: Select Conversation (Default Behavior)
+
+By default, `--select-conversation` is enabled. The agent should:
+
+1. **Take a snapshot** to see the sidebar structure
+2. **Find the conversation** by its ID (from browser-export.json or --browser-conversation-id)
+3. **Click on the conversation** in the sidebar to open it
+4. **Wait for the conversation to load** before proceeding
+
+The conversation ID can be found in `config/browser-export.json` or provided via `--browser-conversation-id`.
+
+### Step 3: Extract Messages Incrementally
 
 The Cursor Agent should:
 
@@ -65,21 +82,45 @@ The Cursor Agent should:
 
 4. **Repeat** until you've reached the target date or no new messages are found
 
-### Step 3: Process and Upload
+### Step 4: Process and Upload
 
 Once extraction is complete:
 
+**Option A: Using browser-export.json (Required)**
 ```bash
 python src/main.py --browser-export-dm --upload-to-drive \
-  --browser-response-dir browser_exports \
-  --browser-conversation-name "Tara" \
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-name "Tara, Jay Flowers" \
+  --start-date 2023-11-29 \
+  --end-date 2024-06-05
+```
+Note: `--browser-export-config` is **required** for browser exports. The conversation name from config will be used (e.g., "Tara, Jay Flowers" from browser-export.json), ensuring consistent folder naming in Google Drive.
+
+**Option B: Using conversation ID from config**
+```bash
+python src/main.py --browser-export-dm --upload-to-drive \
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-id "D067Q2KV8VC" \
+  --start-date 2023-11-29 \
+  --end-date 2024-06-05
+```
+The conversation name will be automatically loaded from browser-export.json based on the ID.
+
+**Option C: Disable automatic selection (if already navigated)**
+```bash
+python src/main.py --browser-export-dm --upload-to-drive \
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-name "Tara, Jay Flowers" \
+  --no-select-conversation \
   --start-date 2023-11-29 \
   --end-date 2024-06-05
 ```
 
-**⚠️ CRITICAL: `--browser-conversation-name` is REQUIRED**
+**⚠️ CRITICAL: `--browser-export-config` is REQUIRED**
 
-You **must** specify `--browser-conversation-name` with the actual conversation name (e.g., `"Tara"`). The default "DM" is not allowed and will cause the script to fail. This ensures messages are organized in folders named after the actual conversation, matching the behavior of regular API exports.
+You **must** specify `--browser-export-config` pointing to your browser-export.json file. The conversation name from the config file will be used (e.g., `"Tara, Jay Flowers"`), ensuring consistent folder naming in Google Drive that matches the configured name.
+
+**Note:** If you provide `--browser-conversation-name`, it will be used to find the conversation in config, but the actual name from config will be used for folder naming. This ensures consistency with your browser-export.json configuration.
 
 ## JavaScript Extraction Script
 
@@ -245,9 +286,53 @@ The visible date separators tell you:
 **Problem:** Date range not reached
 - **Solution:** Continue scrolling backward. Slack uses virtual scrolling, so you need to scroll through all intermediate dates.
 
+## Using browser-export.json
+
+The `config/browser-export.json` file contains a list of conversations to export, similar to `channels.json` for Slack API exports. Each conversation entry includes:
+
+- `id`: Slack conversation ID (e.g., "D06DDJ2UH2M")
+- `name`: Conversation display name (e.g., "Alex Xuan, Jay Flowers")
+- `is_im`: Boolean indicating if it's a direct message
+- `is_mpim`: Boolean indicating if it's a group message
+- `export`: Boolean indicating if this conversation should be exported
+- `share`: Boolean indicating if the folder should be shared with participants
+- `shareMembers`: Optional list of user IDs, emails, or display names to share with (selective sharing)
+
+**Benefits:**
+- Automatic conversation selection from sidebar
+- Consistent sharing logic with Slack API exports
+- Selective sharing support via `shareMembers`
+- Respects `people.json` opt-out preferences (`noShare`, `noNotifications`)
+
+**Example browser-export.json entry:**
+```json
+{
+    "id": "D06DDJ2UH2M",
+    "name": "Alex Xuan, Jay Flowers",
+    "is_im": true,
+    "is_mpim": false,
+    "export": true,
+    "share": true,
+    "shareMembers": ["alex.xuan@example.com"]
+}
+```
+
+## Sharing Logic
+
+Browser exports use the same sharing logic as Slack API exports:
+
+1. **Checks `share` flag**: If `share: false`, no sharing occurs
+2. **Respects `shareMembers`**: If provided, only shares with specified members
+3. **Respects opt-outs**: Checks `people.json` for `noShare` and `noNotifications` preferences
+4. **Requires SLACK_BOT_TOKEN**: Sharing requires Slack API access to lookup member emails
+
+**Note:** If `SLACK_BOT_TOKEN` is not set, sharing will be skipped with a warning.
+
 ## Files Involved
 
+- `config/browser-export.json` - Configuration file listing conversations to export
 - `scripts/extract_dom_messages.py` - Extracts messages from DOM, handles deduplication and combining, outputs to stdout
+- `scripts/select_conversation_from_sidebar.py` - Helper script for conversation selection
 - `src/browser_scraper.py` - Contains JavaScript extraction function
 - `src/main.py` - Processes messages from stdin and uploads to Google Drive
 
