@@ -57,7 +57,7 @@ class GoogleDriveClient:
             self._last_api_call_time = 0.0
             self._api_call_count = 0
         except Exception as e:
-            logger.error(f"Failed to initialize Google Drive client: {e}")
+            logger.error(f"Failed to initialize Google Drive client: {e}", exc_info=True)
             raise
 
     def _escape_drive_query_string(self, value: str) -> str:
@@ -204,7 +204,7 @@ class GoogleDriveClient:
 
             logger.debug(f"Token saved successfully to {token_path}")
         except Exception as e:
-            logger.error(f"Failed to save token: {e}")
+            logger.error(f"Failed to save token: {e}", exc_info=True)
             if os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -230,6 +230,12 @@ class GoogleDriveClient:
     def _rate_limit(self):
         """Apply rate limiting for Google Drive API calls."""
         current_time = time.time()
+        
+        # Validate last_api_call_time is a valid timestamp
+        if not isinstance(self._last_api_call_time, (int, float)) or self._last_api_call_time < 0:
+            logger.warning(f"Invalid last_api_call_time: {self._last_api_call_time}, resetting to 0")
+            self._last_api_call_time = 0.0
+        
         time_since_last_call = current_time - self._last_api_call_time
 
         # Always add base delay between calls
@@ -238,6 +244,11 @@ class GoogleDriveClient:
             time.sleep(sleep_time)
 
         # After batch_size calls, add extra delay
+        # Validate api_call_count is a valid integer
+        if not isinstance(self._api_call_count, int) or self._api_call_count < 0:
+            logger.warning(f"Invalid api_call_count: {self._api_call_count}, resetting to 0")
+            self._api_call_count = 0
+        
         self._api_call_count += 1
         if self._api_call_count >= GOOGLE_DRIVE_BATCH_SIZE:
             time.sleep(GOOGLE_DRIVE_BATCH_DELAY)
@@ -289,14 +300,14 @@ class GoogleDriveClient:
             try:
                 creds = Credentials.from_authorized_user_file(token_path, scopes)
             except Exception as e:
-                logger.warning(f"Error loading token file {token_path}: {e}")
+                logger.warning(f"Error loading token file {token_path}: {e}", exc_info=True)
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
                 except Exception as e:
-                    logger.warning(f"Error refreshing token: {e}")
+                    logger.warning(f"Error refreshing token: {e}", exc_info=True)
                     creds = None
 
             if not creds or not creds.valid:
@@ -349,14 +360,14 @@ class GoogleDriveClient:
             try:
                 creds = Credentials.from_authorized_user_file(token_path, scopes)
             except Exception as e:
-                logger.warning(f"Error loading token file {token_path}: {e}")
+                logger.warning(f"Error loading token file {token_path}: {e}", exc_info=True)
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
                 except Exception as e:
-                    logger.warning(f"Error refreshing token: {e}")
+                    logger.warning(f"Error refreshing token: {e}", exc_info=True)
                     creds = None
 
             if not creds or not creds.valid:
@@ -573,7 +584,7 @@ class GoogleDriveClient:
         except HttpError as error:
             logger.warning(f"Error reading document content for timestamp extraction: {error}")
         except Exception as e:
-            logger.debug(f"Error extracting timestamps from document: {e}")
+            logger.debug(f"Error extracting timestamps from document: {e}", exc_info=True)
             
         return timestamps
 
@@ -924,7 +935,7 @@ class GoogleDriveClient:
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.debug(f"Could not parse metadata file: {e}")
         except Exception as e:
-            logger.debug(f"Error reading metadata file: {e}")
+            logger.debug(f"Error reading metadata file: {e}", exc_info=True)
 
         # Fallback: parse timestamps from filenames (for backward compatibility)
         files = self.list_files_in_folder(folder_id, name_pattern=f"{file_prefix}_history_")
@@ -970,7 +981,7 @@ class GoogleDriveClient:
                         else:
                             latest_timestamp = str(file_timestamp)
                 except Exception as e:
-                    logger.debug(f"Could not parse timestamp from filename {filename}: {e}")
+                    logger.debug(f"Could not parse timestamp from filename {filename}: {e}", exc_info=True)
                     continue
 
         # If we didn't find a timestamp in filename, use the most recent file's modifiedTime
@@ -984,7 +995,7 @@ class GoogleDriveClient:
                     mod_dt = dt.fromisoformat(modified_time.replace("Z", "+00:00"))
                     latest_timestamp = str(mod_dt.timestamp())
             except Exception as e:
-                logger.debug(f"Could not parse modifiedTime from file: {e}")
+                logger.debug(f"Could not parse modifiedTime from file: {e}", exc_info=True)
 
         if latest_timestamp:
             logger.debug(f"Using fallback timestamp from filename parsing: {latest_timestamp}")
@@ -1054,7 +1065,7 @@ class GoogleDriveClient:
             logger.warning(f"Failed to save export metadata: {error}")
             return False
         except Exception as e:
-            logger.warning(f"Error saving export metadata: {e}")
+            logger.warning(f"Error saving export metadata: {e}", exc_info=True)
             return False
 
     def get_folder_permissions(self, folder_id: str) -> list:
@@ -1083,7 +1094,7 @@ class GoogleDriveClient:
         except HttpError as error:
             logger.warning(f"Error listing permissions for folder {folder_id}: {error}")
         except Exception as e:
-            logger.debug(f"Error getting folder permissions: {e}")
+            logger.debug(f"Error getting folder permissions: {e}", exc_info=True)
 
         return permissions
 
@@ -1143,7 +1154,7 @@ class GoogleDriveClient:
             )
             return False
         except Exception as e:
-            logger.warning(f"Error sharing folder: {e}")
+            logger.warning(f"Error sharing folder: {e}", exc_info=True)
             return False
 
     def revoke_folder_access(self, folder_id: str, email_address: str) -> bool:
@@ -1198,5 +1209,5 @@ class GoogleDriveClient:
             )
             return False
         except Exception as e:
-            logger.warning(f"Error revoking folder access: {e}")
+            logger.warning(f"Error revoking folder access: {e}", exc_info=True)
             return False

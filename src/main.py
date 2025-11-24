@@ -513,6 +513,23 @@ def _should_share_with_member(
     return False
 
 
+def _validate_conversation_id(conversation_id: str) -> bool:
+    """Validate Slack conversation ID format.
+
+    Args:
+        conversation_id: Conversation ID to validate
+
+    Returns:
+        True if valid format, False otherwise
+    """
+    if not conversation_id or not isinstance(conversation_id, str):
+        return False
+    if len(conversation_id) < 9:
+        return False
+    # Slack IDs start with C (channel), D (DM), or G (group DM)
+    return conversation_id[0] in ['C', 'D', 'G'] and conversation_id[1:].isalnum()
+
+
 def _get_conversation_members(
     slack_client: SlackClient,
     conversation_id: str,
@@ -535,6 +552,11 @@ def _get_conversation_members(
     """
     members = []
     
+    # Validate conversation ID format before using it
+    if not _validate_conversation_id(conversation_id):
+        logger.warning(f"Invalid conversation ID format: {conversation_id}")
+        return []
+    
     if conversation_info.get("is_im"):
         # DM - get the other user
         other_user_id = conversation_info.get("user")
@@ -550,7 +572,7 @@ def _get_conversation_members(
                     if user_id:
                         members = [user_id]
             except Exception as e:
-                logger.warning(f"Could not get user for DM {conversation_id}: {e}")
+                logger.warning(f"Could not get user for DM {conversation_id}: {e}", exc_info=True)
     elif conversation_info.get("is_mpim"):
         # Group DM - get all members
         members = slack_client.get_channel_members(conversation_id)
@@ -667,6 +689,7 @@ def share_folder_with_conversation_members(
                 else:
                     revoke_errors.append(f"{perm_email}: revoke failed")
             except Exception as e:
+                logger.debug(f"Error revoking access for {perm_email}: {e}", exc_info=True)
                 revoke_errors.append(f"{perm_email}: {str(e)}")
 
     if revoked_count > 0:
@@ -725,6 +748,7 @@ def share_folder_with_conversation_members(
                         share_errors.append(f"{email}: share failed")
                         share_failures += 1
                 except Exception as e:
+                    logger.debug(f"Error sharing folder with {email}: {e}", exc_info=True)
                     share_errors.append(f"{email}: {str(e)}")
                     share_failures += 1
 
@@ -858,7 +882,7 @@ def load_browser_export_config(config_path: str) -> Optional[Dict[str, Any]]:
         
         return {"browser-export": browser_exports}
     except Exception as e:
-        logger.warning(f"Error loading browser-export config: {e}")
+        logger.warning(f"Error loading browser-export config: {e}", exc_info=True)
         return None
 
 
@@ -973,7 +997,7 @@ def share_folder_for_browser_export(
                     if user_id:
                         members = [user_id]
             except Exception as e:
-                logger.warning(f"Could not get user for DM {conversation_id}: {e}")
+                logger.warning(f"Could not get user for DM {conversation_id}: {e}", exc_info=True)
     elif conversation_info.get("is_mpim"):
         # Group DM - get all members
         members = slack_client.get_channel_members(conversation_id)
@@ -1043,6 +1067,7 @@ def share_folder_for_browser_export(
                 else:
                     revoke_errors.append(f"{perm_email}: revoke failed")
             except Exception as e:
+                logger.debug(f"Error revoking access for {perm_email}: {e}", exc_info=True)
                 revoke_errors.append(f"{perm_email}: {str(e)}")
     
     if revoked_count > 0:
@@ -1101,6 +1126,7 @@ def share_folder_for_browser_export(
                         share_errors.append(f"{email}: share failed")
                         share_failures += 1
                 except Exception as e:
+                    logger.debug(f"Error sharing folder with {email}: {e}", exc_info=True)
                     share_errors.append(f"{email}: {str(e)}")
                     share_failures += 1
     
@@ -1533,7 +1559,8 @@ def upload_messages_to_drive(
                     )
         except Exception as e:
             logger.debug(
-                f"Error checking for existing doc '{doc_name}': {e}, assuming new doc"
+                f"Error checking for existing doc '{doc_name}': {e}, assuming new doc",
+                exc_info=True
             )
 
         # Prepare content: add header only for new docs
@@ -2428,7 +2455,7 @@ if __name__ == "__main__":
                 try:
                     select_conversation_from_sidebar(args.browser_conversation_id)
                 except Exception as e:
-                    logger.warning(f"Failed to select conversation from sidebar: {e}")
+                    logger.warning(f"Failed to select conversation from sidebar: {e}", exc_info=True)
                     logger.warning("Continuing with extraction - ensure browser is positioned on the correct conversation.")
 
         logger.info("Browser-based DM export mode (DOM extraction)")
@@ -2655,7 +2682,7 @@ if __name__ == "__main__":
                             stats,
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to share folder (Slack client error): {e}")
+                        logger.warning(f"Failed to share folder (Slack client error): {e}", exc_info=True)
                 else:
                     logger.warning("SLACK_BOT_TOKEN not set - skipping folder sharing. Set token to enable sharing.")
 

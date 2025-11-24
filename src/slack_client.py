@@ -333,6 +333,7 @@ class SlackClient:
                         return None
                 except Exception as e:
                     # Handle network timeouts and other transient exceptions
+                    logger.debug(f"Transient error during API call: {e}", exc_info=True)
                     error_str = str(e).lower()
                     is_transient = any(
                         keyword in error_str
