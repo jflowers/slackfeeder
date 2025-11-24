@@ -11,10 +11,14 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.main import (
+    _get_conversation_members,
+    _initialize_stats,
     _should_share_with_member,
     estimate_file_size,
+    filter_messages_by_date_range,
     find_conversation_in_config,
     get_conversation_display_name,
+    get_oldest_timestamp_for_export,
     group_messages_by_date,
     load_browser_export_config,
     preprocess_history,
@@ -1015,3 +1019,292 @@ class TestFindConversationInConfig:
         )
         assert result is not None
         assert result["id"] == "D06DDJ2UH2M"  # Should find by ID first
+
+
+class TestInitializeStats:
+    """Tests for _initialize_stats function."""
+
+    def test_initialize_stats_returns_all_keys(self):
+        """Test that _initialize_stats returns all required keys."""
+        stats = _initialize_stats()
+        assert isinstance(stats, dict)
+        assert "processed" in stats
+        assert "skipped" in stats
+        assert "failed" in stats
+        assert "uploaded" in stats
+        assert "upload_failed" in stats
+        assert "shared" in stats
+        assert "share_failed" in stats
+        assert "total_messages" in stats
+        assert all(v == 0 for v in stats.values())
+
+
+class TestFilterMessagesByDateRange:
+    """Tests for filter_messages_by_date_range function."""
+
+    def test_filter_no_timestamps_returns_all(self):
+        """Test that filtering with no timestamps returns all messages."""
+        messages = [
+            {"ts": "1729263032.513419", "text": "Message 1"},
+            {"ts": "1729263033.513419", "text": "Message 2"},
+        ]
+        filtered, error = filter_messages_by_date_range(messages, None, None)
+        assert error is None
+        assert len(filtered) == 2
+
+    def test_filter_by_oldest_timestamp(self):
+        """Test filtering by oldest timestamp."""
+        messages = [
+            {"ts": "1729263032.513419", "text": "Message 1"},
+            {"ts": "1729263033.513419", "text": "Message 2"},
+            {"ts": "1729263034.513419", "text": "Message 3"},
+        ]
+        # Filter to only messages after 1729263033.0
+        filtered, error = filter_messages_by_date_range(
+            messages, oldest_ts="1729263033.0", latest_ts=None
+        )
+        assert error is None
+        assert len(filtered) == 2
+        assert filtered[0]["text"] == "Message 2"
+        assert filtered[1]["text"] == "Message 3"
+
+    def test_filter_by_latest_timestamp(self):
+        """Test filtering by latest timestamp."""
+        messages = [
+            {"ts": "1729263032.513419", "text": "Message 1"},
+            {"ts": "1729263033.513419", "text": "Message 2"},
+            {"ts": "1729263034.513419", "text": "Message 3"},
+        ]
+        # Filter to only messages before or equal to 1729263033.513419 (Message 2's timestamp)
+        filtered, error = filter_messages_by_date_range(
+            messages, oldest_ts=None, latest_ts="1729263033.513419"
+        )
+        assert error is None
+        assert len(filtered) == 2  # Messages 1 and 2 (both <= Message 2's timestamp)
+        assert filtered[0]["text"] == "Message 1"
+        assert filtered[1]["text"] == "Message 2"
+
+    def test_filter_by_date_range(self):
+        """Test filtering by both oldest and latest timestamp."""
+        messages = [
+            {"ts": "1729263032.513419", "text": "Message 1"},
+            {"ts": "1729263033.513419", "text": "Message 2"},
+            {"ts": "1729263034.513419", "text": "Message 3"},
+        ]
+        # Filter to messages between 1729263032.0 and 1729263033.0 (inclusive)
+        # Message 1 (Message 1 is in range, Message 2 is excluded)
+        filtered, error = filter_messages_by_date_range(
+            messages, oldest_ts="1729263032.0", latest_ts="1729263033.0"
+        )
+        assert error is None
+        # Message 1 (1729263032.513419) is >= 1729263032.0 and <= 1729263033.0, so included
+        # Message 2 (1729263033.513419) is > 1729263033.0, so excluded
+        # Message 3 (1729263034.513419) is > 1729263033.0, so excluded
+        assert len(filtered) == 1
+        assert filtered[0]["text"] == "Message 1"
+
+    def test_validate_range_start_after_end(self):
+        """Test that validation catches start date after end date."""
+        messages = []
+        filtered, error = filter_messages_by_date_range(
+            messages, oldest_ts="1729263034.0", latest_ts="1729263032.0", validate_range=True
+        )
+        assert error is not None
+        assert "must be before" in error.lower()
+        assert len(filtered) == 0
+
+    def test_validate_max_date_range(self):
+        """Test validation of maximum date range."""
+        messages = []
+        filtered, error = filter_messages_by_date_range(
+            messages,
+            oldest_ts="1729263032.0",
+            latest_ts="1729263032.0",
+            validate_range=True,
+            max_date_range_days=365,
+        )
+        assert error is None  # Same timestamp = 0 days, should pass
+
+        # Test with range exceeding max
+        SECONDS_PER_DAY = 86400
+        old_ts = "1729263032.0"
+        new_ts = str(float(old_ts) + (400 * SECONDS_PER_DAY))  # 400 days
+        filtered, error = filter_messages_by_date_range(
+            messages,
+            oldest_ts=old_ts,
+            latest_ts=new_ts,
+            validate_range=True,
+            max_date_range_days=365,
+        )
+        assert error is not None
+        assert "exceeds maximum" in error.lower()
+
+    def test_filter_messages_without_timestamp(self):
+        """Test that messages without timestamp are excluded."""
+        messages = [
+            {"ts": "1729263032.513419", "text": "Message 1"},
+            {"text": "Message without timestamp"},
+            {"ts": "1729263033.513419", "text": "Message 2"},
+        ]
+        filtered, error = filter_messages_by_date_range(
+            messages, oldest_ts="1729263032.0", latest_ts="1729263034.0"
+        )
+        assert error is None
+        assert len(filtered) == 2  # Only messages with timestamps
+
+
+class TestGetConversationMembers:
+    """Tests for _get_conversation_members function."""
+
+    def test_get_channel_members(self):
+        """Test getting members for a regular channel."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_channel_members.return_value = ["U123", "U456"]
+
+        conversation_info = {}  # Not a DM or group DM
+        members = _get_conversation_members(slack_client, "C123456", conversation_info)
+
+        assert members == ["U123", "U456"]
+        slack_client.get_channel_members.assert_called_once_with("C123456")
+
+    def test_get_dm_members_from_user_field(self):
+        """Test getting DM member from user field."""
+        slack_client = Mock(spec=SlackClient)
+
+        conversation_info = {"is_im": True, "user": "U123"}
+        members = _get_conversation_members(slack_client, "D123456", conversation_info)
+
+        assert members == ["U123"]
+        slack_client.get_channel_members.assert_not_called()
+
+    def test_get_dm_members_from_api(self):
+        """Test getting DM member via API when user field missing."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.client = Mock()
+        slack_client.client.conversations_info.return_value = {
+            "ok": True,
+            "channel": {"user": "U123"},
+        }
+
+        conversation_info = {"is_im": True}  # No user field
+        members = _get_conversation_members(slack_client, "D123456", conversation_info)
+
+        assert members == ["U123"]
+        slack_client.client.conversations_info.assert_called_once_with(channel="D123456")
+
+    def test_get_group_dm_members(self):
+        """Test getting members for a group DM."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_channel_members.return_value = ["U123", "U456", "U789"]
+
+        conversation_info = {"is_mpim": True}
+        members = _get_conversation_members(slack_client, "G123456", conversation_info)
+
+        assert members == ["U123", "U456", "U789"]
+        slack_client.get_channel_members.assert_called_once_with("G123456")
+
+    def test_get_dm_members_api_failure(self):
+        """Test handling API failure when getting DM member."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.client = Mock()
+        slack_client.client.conversations_info.side_effect = Exception("API Error")
+
+        conversation_info = {"is_im": True}  # No user field
+        members = _get_conversation_members(slack_client, "D123456", conversation_info)
+
+        assert members == []  # Should return empty list on failure
+
+
+class TestGetOldestTimestampForExport:
+    """Tests for get_oldest_timestamp_for_export function."""
+
+    def test_no_explicit_date_no_drive(self):
+        """Test with no explicit date and not uploading to Drive."""
+        result = get_oldest_timestamp_for_export(
+            google_drive_client=None,
+            folder_id=None,
+            conversation_name="Test Channel",
+            explicit_start_date=None,
+            upload_to_drive=False,
+        )
+        assert result is None
+
+    def test_explicit_date_no_drive(self):
+        """Test with explicit date and not uploading to Drive."""
+        result = get_oldest_timestamp_for_export(
+            google_drive_client=None,
+            folder_id=None,
+            conversation_name="Test Channel",
+            explicit_start_date="2024-01-01",
+            upload_to_drive=False,
+        )
+        assert result is not None
+        assert isinstance(result, str)
+
+    def test_explicit_date_with_drive_no_metadata(self):
+        """Test with explicit date and Drive but no previous export."""
+        google_drive_client = Mock()
+        google_drive_client.create_folder.return_value = "folder123"
+        google_drive_client.get_latest_export_timestamp.return_value = None
+
+        result = get_oldest_timestamp_for_export(
+            google_drive_client=google_drive_client,
+            folder_id=None,
+            conversation_name="Test Channel",
+            explicit_start_date="2024-01-01",
+            upload_to_drive=True,
+            sanitized_folder_name="test-channel",
+            safe_conversation_name="test-channel",
+        )
+        assert result is not None
+        assert isinstance(result, str)
+
+    def test_drive_metadata_no_explicit_date(self):
+        """Test with Drive metadata but no explicit date."""
+        google_drive_client = Mock()
+        google_drive_client.create_folder.return_value = "folder123"
+        google_drive_client.get_latest_export_timestamp.return_value = "1729263032.0"
+
+        result = get_oldest_timestamp_for_export(
+            google_drive_client=google_drive_client,
+            folder_id="folder123",
+            conversation_name="Test Channel",
+            explicit_start_date=None,
+            upload_to_drive=True,
+            safe_conversation_name="test-channel",
+        )
+        assert result == "1729263032.0"
+
+    def test_drive_metadata_later_than_explicit_date(self):
+        """Test when Drive metadata is later than explicit date."""
+        google_drive_client = Mock()
+        google_drive_client.get_latest_export_timestamp.return_value = "1729263034.0"
+
+        result = get_oldest_timestamp_for_export(
+            google_drive_client=google_drive_client,
+            folder_id="folder123",
+            conversation_name="Test Channel",
+            explicit_start_date="2024-10-18",  # Converts to ~1729263032.0
+            upload_to_drive=True,
+            safe_conversation_name="test-channel",
+        )
+        # Should use the later of the two (Drive metadata)
+        assert result == "1729263034.0"
+
+    def test_explicit_date_later_than_drive_metadata(self):
+        """Test when explicit date is later than Drive metadata."""
+        google_drive_client = Mock()
+        google_drive_client.get_latest_export_timestamp.return_value = "1729263032.0"
+
+        # Use a date that converts to a timestamp later than 1729263032.0
+        result = get_oldest_timestamp_for_export(
+            google_drive_client=google_drive_client,
+            folder_id="folder123",
+            conversation_name="Test Channel",
+            explicit_start_date="2024-10-20",  # Later date
+            upload_to_drive=True,
+            safe_conversation_name="test-channel",
+        )
+        # Should use the later of the two (explicit date)
+        assert result is not None
+        assert float(result) >= 1729263032.0
