@@ -25,6 +25,7 @@ from src.utils import (
     sanitize_filename,
     sanitize_folder_name,
     sanitize_path_for_logging,
+    sanitize_string_for_logging,
     save_json_file,
     setup_logging,
     validate_channel_id,
@@ -66,6 +67,8 @@ MAX_DATE_RANGE_DAYS = _get_env_int("MAX_DATE_RANGE_DAYS", 365)
 # Chunking thresholds for bulk exports
 CHUNK_DATE_RANGE_DAYS = 30  # Chunk if date range exceeds this
 CHUNK_MESSAGE_THRESHOLD = 10000  # Chunk if message count exceeds this
+# Memory management: chunk size for processing daily message groups in upload_messages_to_drive
+DAILY_MESSAGE_CHUNK_SIZE = 10000  # Process daily messages in chunks of this size to manage memory
 
 
 def replace_user_ids_in_text(
@@ -284,7 +287,7 @@ def get_conversation_display_name(channel_info: Dict[str, Any], slack_client: Sl
             )
             members = slack_client.get_channel_members(channel_id)
         if not members:
-            logger.warning(f"Group DM {channel_id} has no members")
+            logger.warning(f"Group DM {sanitize_string_for_logging(channel_id)} has no members")
             return f"group_dm_{channel_id[:8]}"
         names = []
         for member_id in members:
@@ -555,7 +558,7 @@ def _get_conversation_members(
     
     # Validate conversation ID format before using it
     if not _validate_conversation_id(conversation_id):
-        logger.warning(f"Invalid conversation ID format: {conversation_id}")
+        logger.warning(f"Invalid conversation ID format: {sanitize_string_for_logging(conversation_id)}")
         return []
     
     if conversation_info.get("is_im"):
@@ -573,7 +576,7 @@ def _get_conversation_members(
                     if user_id:
                         members = [user_id]
             except Exception as e:
-                logger.warning(f"Could not get user for DM {conversation_id}: {e}", exc_info=True)
+                logger.warning(f"Could not get user for DM {sanitize_string_for_logging(conversation_id)}: {e}", exc_info=True)
     elif conversation_info.get("is_mpim"):
         # Group DM - get all members
         members = slack_client.get_channel_members(conversation_id)
@@ -620,13 +623,13 @@ def share_folder_with_conversation_members(
     # Check if sharing is enabled
     should_share = conversation_info.get("share", True)
     if not should_share:
-        logger.info(f"Sharing disabled for {conversation_name} (share: false in {config_source})")
+        logger.info(f"Sharing disabled for {sanitize_string_for_logging(conversation_name)} (share: false in {config_source})")
         return
 
     # Get conversation members based on type
     members = _get_conversation_members(slack_client, conversation_id, conversation_info)
     if not members:
-        logger.warning(f"No members found for {conversation_name}. Skipping sharing.")
+        logger.warning(f"No members found for {sanitize_string_for_logging(conversation_name)}. Skipping sharing.")
         return
 
     # Get shareMembers list if provided
@@ -694,7 +697,7 @@ def share_folder_with_conversation_members(
                 revoke_errors.append(f"{perm_email}: {str(e)}")
 
     if revoked_count > 0:
-        logger.info(f"Revoked access for {revoked_count} user(s) no longer in {conversation_name}")
+        logger.info(f"Revoked access for {revoked_count} user(s) no longer in {sanitize_string_for_logging(conversation_name)}")
     if revoke_errors:
         logger.warning(f"Failed to revoke access for some users: {', '.join(revoke_errors)}")
 
@@ -713,12 +716,12 @@ def share_folder_with_conversation_members(
             email = user_info["email"]
             # Validate email format
             if not validate_email(email):
-                logger.warning(f"Invalid email format: {email}. Skipping.")
+                logger.warning(f"Invalid email format: {sanitize_string_for_logging(email)}. Skipping.")
                 continue
 
             # Skip if user has opted out of being shared with
             if email.lower() in no_share_set:
-                logger.debug(f"User {email} has opted out of being shared with, skipping")
+                logger.debug(f"User {sanitize_string_for_logging(email)} has opted out of being shared with, skipping")
                 excluded_count += 1
                 continue
 
@@ -749,7 +752,7 @@ def share_folder_with_conversation_members(
                         share_errors.append(f"{email}: share failed")
                         share_failures += 1
                 except Exception as e:
-                    logger.debug(f"Error sharing folder with {email}: {e}", exc_info=True)
+                    logger.debug(f"Error sharing folder with {sanitize_string_for_logging(email)}: {e}", exc_info=True)
                     share_errors.append(f"{email}: {str(e)}")
                     share_failures += 1
 
@@ -934,7 +937,7 @@ def select_conversation_from_sidebar(conversation_id: str) -> bool:
     # We can't call MCP tools directly here, so we'll document the approach
     # and the agent will implement it using mcp_chrome-devtools tools
     
-    logger.info(f"To select conversation {conversation_id} from sidebar:")
+    logger.info(f"To select conversation {sanitize_string_for_logging(conversation_id)} from sidebar:")
     logger.info("1. Take a snapshot of the page")
     logger.info("2. Find the div with id matching conversation_id")
     logger.info("3. Find the parent treeitem element")
@@ -970,13 +973,13 @@ def share_folder_for_browser_export(
     # Check if sharing is enabled
     should_share = conversation_info.get("share", True)
     if not should_share:
-        logger.info(f"Sharing disabled for {conversation_name} (share: false in browser-export.json)")
+        logger.info(f"Sharing disabled for {sanitize_string_for_logging(conversation_name)} (share: false in browser-export.json)")
         return
     
     # Get conversation ID
     conversation_id = conversation_info.get("id")
     if not conversation_id:
-        logger.warning(f"No conversation ID found for {conversation_name}. Cannot share.")
+        logger.warning(f"No conversation ID found for {sanitize_string_for_logging(conversation_name)}. Cannot share.")
         return
     
     # Get members - for browser exports, we need to use Slack API
@@ -998,7 +1001,7 @@ def share_folder_for_browser_export(
                     if user_id:
                         members = [user_id]
             except Exception as e:
-                logger.warning(f"Could not get user for DM {conversation_id}: {e}", exc_info=True)
+                logger.warning(f"Could not get user for DM {sanitize_string_for_logging(conversation_id)}: {e}", exc_info=True)
     elif conversation_info.get("is_mpim"):
         # Group DM - get all members
         members = slack_client.get_channel_members(conversation_id)
@@ -1072,7 +1075,7 @@ def share_folder_for_browser_export(
                 revoke_errors.append(f"{perm_email}: {str(e)}")
     
     if revoked_count > 0:
-        logger.info(f"Revoked access for {revoked_count} user(s) no longer in {conversation_name}")
+        logger.info(f"Revoked access for {revoked_count} user(s) no longer in {sanitize_string_for_logging(conversation_name)}")
     if revoke_errors:
         logger.warning(f"Failed to revoke access for some users: {', '.join(revoke_errors)}")
     
@@ -1127,7 +1130,7 @@ def share_folder_for_browser_export(
                         share_errors.append(f"{email}: share failed")
                         share_failures += 1
                 except Exception as e:
-                    logger.debug(f"Error sharing folder with {email}: {e}", exc_info=True)
+                    logger.debug(f"Error sharing folder with {sanitize_string_for_logging(email)}: {e}", exc_info=True)
                     share_errors.append(f"{email}: {str(e)}")
                     share_failures += 1
     
@@ -1194,7 +1197,7 @@ def share_folder_for_browser_export(
     """
     conversation_id = conversation_info.get("id")
     if not conversation_id:
-        logger.warning(f"No conversation ID found for {conversation_name}. Cannot share.")
+        logger.warning(f"No conversation ID found for {sanitize_string_for_logging(conversation_name)}. Cannot share.")
         return
     
     share_folder_with_conversation_members(
@@ -1368,28 +1371,48 @@ def get_oldest_timestamp_for_export(
 
     # Parse explicit start date if provided
     if explicit_start_date:
-        explicit_start_ts = convert_date_to_timestamp(explicit_start_date)
-        if explicit_start_ts is None:
-            logger.error(f"Invalid start date format: {explicit_start_date}")
+        try:
+            explicit_start_ts = convert_date_to_timestamp(explicit_start_date)
+            if explicit_start_ts is None:
+                logger.error(f"Invalid start date format: {explicit_start_date}")
+                return None
+            logger.info(f"Explicit start date provided: {explicit_start_date} ({explicit_start_ts})")
+        except Exception as e:
+            logger.error(f"Error parsing explicit start date '{explicit_start_date}': {e}", exc_info=True)
             return None
-        logger.info(f"Explicit start date provided: {explicit_start_date} ({explicit_start_ts})")
 
     # Check Google Drive for last export timestamp if uploading to Drive
     if upload_to_drive and google_drive_client:
         # Create or get folder if we don't have folder_id yet
         if not folder_id and sanitized_folder_name:
-            folder_id = google_drive_client.create_folder(
-                sanitized_folder_name, None  # Will use default parent folder
-            )
+            try:
+                folder_id = google_drive_client.create_folder(
+                    sanitized_folder_name, None  # Will use default parent folder
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to create/get folder '{sanitized_folder_name}' for timestamp lookup: {e}. "
+                    f"Falling back to explicit start date if provided.",
+                    exc_info=True
+                )
+                folder_id = None
 
         if folder_id:
             # Use safe_conversation_name if provided, otherwise sanitize conversation_name
             if not safe_conversation_name:
                 safe_conversation_name = sanitize_filename(conversation_name)
 
-            last_export_ts = google_drive_client.get_latest_export_timestamp(
-                folder_id, safe_conversation_name
-            )
+            try:
+                last_export_ts = google_drive_client.get_latest_export_timestamp(
+                    folder_id, safe_conversation_name
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to get latest export timestamp from Drive for '{conversation_name}': {e}. "
+                    f"Falling back to explicit start date if provided.",
+                    exc_info=True
+                )
+                last_export_ts = None
 
             if last_export_ts:
                 # Use the later of explicit start date or last export timestamp
@@ -1513,22 +1536,19 @@ def upload_messages_to_drive(
         daily_messages = daily_groups[date_key]
         logger.info(f"Processing {len(daily_messages)} messages for date {date_key}")
 
-        # Process messages for this day
-        if use_display_names:
-            processed_messages = preprocess_history(
-                daily_messages, slack_client=None, people_cache=None, use_display_names=True
+        # Memory management: chunk large daily message groups
+        # Split into chunks if exceeding threshold to prevent memory issues
+        if len(daily_messages) > DAILY_MESSAGE_CHUNK_SIZE:
+            logger.info(
+                f"Large daily message group detected ({len(daily_messages)} messages). "
+                f"Processing in chunks of {DAILY_MESSAGE_CHUNK_SIZE} to manage memory."
             )
+            message_chunks = [
+                daily_messages[i : i + DAILY_MESSAGE_CHUNK_SIZE]
+                for i in range(0, len(daily_messages), DAILY_MESSAGE_CHUNK_SIZE)
+            ]
         else:
-            processed_messages = preprocess_history(
-                daily_messages, slack_client, people_cache
-            )
-
-        # Check for empty history after processing
-        if not processed_messages or not processed_messages.strip():
-            logger.warning(
-                f"No processable content found for {date_key} of {conversation_name}. Skipping."
-            )
-            continue
+            message_chunks = [daily_messages]
 
         # Create doc name: conversation name slack messages yyyymmdd
         doc_name_base = f"{conversation_name} slack messages {date_key}"
@@ -1564,20 +1584,52 @@ def upload_messages_to_drive(
                 exc_info=True
             )
 
-        # Prepare content: add header only for new docs
-        if doc_exists:
-            # Append separator and messages (no header for existing docs)
-            content_to_add = f"\n\n{'='*80}\n\n{processed_messages}"
-        else:
-            # Add full header for new docs
-            export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
-            date_display = date_obj.strftime("%Y-%m-%d")
-            
-            # Format channel ID for metadata header
-            channel_id_display = conversation_id if conversation_id else "[Browser Export - No ID]"
-            
-            metadata_header = f"""Slack Conversation Export
+        # Process each chunk for this day
+        is_first_chunk = True
+        for chunk_idx, message_chunk in enumerate(message_chunks, 1):
+            chunk_info = (
+                f" (chunk {chunk_idx}/{len(message_chunks)})"
+                if len(message_chunks) > 1
+                else ""
+            )
+            logger.info(
+                f"Processing {len(message_chunk)} messages for date {date_key}{chunk_info}"
+            )
+
+            # Process messages for this chunk
+            if use_display_names:
+                processed_messages = preprocess_history(
+                    message_chunk, slack_client=None, people_cache=None, use_display_names=True
+                )
+            else:
+                processed_messages = preprocess_history(
+                    message_chunk, slack_client, people_cache
+                )
+
+            # Check for empty history after processing
+            if not processed_messages or not processed_messages.strip():
+                logger.warning(
+                    f"No processable content found for {date_key}{chunk_info} of {conversation_name}. Skipping."
+                )
+                continue
+
+            # Prepare content: add header only for first chunk of new docs
+            if doc_exists or not is_first_chunk:
+                # Append separator and messages (no header for existing docs or subsequent chunks)
+                if len(message_chunks) > 1:
+                    content_to_add = f"\n\n--- Chunk {chunk_idx} of {len(message_chunks)} ({len(message_chunk)} messages) ---\n\n{processed_messages}"
+                else:
+                    content_to_add = f"\n\n{'='*80}\n\n{processed_messages}"
+            else:
+                # Add full header for first chunk of new docs
+                export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
+                date_display = date_obj.strftime("%Y-%m-%d")
+                
+                # Format channel ID for metadata header
+                channel_id_display = conversation_id if conversation_id else "[Browser Export - No ID]"
+                
+                metadata_header = f"""Slack Conversation Export
 Channel: {conversation_name}
 Channel ID: {channel_id_display}
 Export Date: {export_date}
@@ -1587,23 +1639,26 @@ Total Messages: {len(daily_messages)}
 {'='*80}
 
 """
-            content_to_add = metadata_header + processed_messages
+                content_to_add = metadata_header + processed_messages
 
-        # Create or update Google Doc (append mode for incremental updates)
-        doc_id = google_drive_client.create_or_update_google_doc(
-            doc_name, content_to_add, folder_id, overwrite=False
-        )
-
-        if not doc_id:
-            logger.error(
-                f"Failed to create Google Doc for {date_key} of {conversation_name}"
+            # Create or update Google Doc (append mode for incremental updates)
+            doc_id = google_drive_client.create_or_update_google_doc(
+                doc_name, content_to_add, folder_id, overwrite=False
             )
-            stats["upload_failed"] += 1
-        else:
-            stats["uploaded"] += 1
-            stats["processed"] += 1
-            stats["total_messages"] += len(daily_messages)
-            logger.info(f"Created/updated Google Doc for {date_key}")
+
+            if not doc_id:
+                logger.error(
+                    f"Failed to create Google Doc for {date_key}{chunk_info} of {conversation_name}"
+                )
+                stats["upload_failed"] += 1
+            else:
+                if is_first_chunk:
+                    stats["uploaded"] += 1
+                    stats["processed"] += 1
+                stats["total_messages"] += len(message_chunk)
+                logger.info(f"Created/updated Google Doc for {date_key}{chunk_info}")
+
+            is_first_chunk = False
 
     # Save export metadata with latest timestamp from all messages
     if messages:

@@ -300,6 +300,33 @@ def sanitize_path_for_logging(filepath: str) -> str:
     return os.path.basename(filepath)
 
 
+def sanitize_string_for_logging(value: str) -> str:
+    """Sanitize user-provided strings for logging to prevent log injection.
+
+    Removes control characters (newlines, carriage returns, etc.) that could be used
+    to inject fake log entries. Truncates very long strings to prevent log flooding.
+
+    Args:
+        value: String value to sanitize (conversation names, IDs, emails, etc.)
+
+    Returns:
+        Sanitized string safe for logging
+    """
+    if not value:
+        return "[empty]"
+    # Remove control characters (newlines, carriage returns, tabs, etc.)
+    # Keep only printable characters and spaces
+    sanitized = "".join(char for char in value if char.isprintable() or char.isspace())
+    # Remove newlines and carriage returns explicitly
+    sanitized = sanitized.replace("\n", " ").replace("\r", " ")
+    # Collapse multiple spaces into single space
+    sanitized = " ".join(sanitized.split())
+    # Truncate very long strings to prevent log flooding (max 200 chars)
+    if len(sanitized) > 200:
+        sanitized = sanitized[:197] + "..."
+    return sanitized
+
+
 def validate_email(email: str) -> bool:
     """Validate email format.
 
