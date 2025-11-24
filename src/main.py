@@ -513,51 +513,106 @@ def _should_share_with_member(
     return False
 
 
-def share_folder_with_members(
+def _get_conversation_members(
+    slack_client: SlackClient,
+    conversation_id: str,
+    conversation_info: Dict[str, Any],
+) -> List[str]:
+    """Get conversation members based on conversation type.
+
+    Handles channels, DMs, and group DMs appropriately.
+
+    Args:
+        slack_client: SlackClient instance
+        conversation_id: Slack conversation ID
+        conversation_info: Conversation configuration dictionary
+            - is_im: bool - True if DM
+            - is_mpim: bool - True if group DM
+            - user: Optional[str] - Other user ID for DMs
+
+    Returns:
+        List of member user IDs
+    """
+    members = []
+    
+    if conversation_info.get("is_im"):
+        # DM - get the other user
+        other_user_id = conversation_info.get("user")
+        if other_user_id:
+            members = [other_user_id]
+        else:
+            # Try to get from conversation ID (DM IDs start with D)
+            # For DMs, we need to use conversations.info to get the user
+            try:
+                conv_info = slack_client.client.conversations_info(channel=conversation_id)
+                if conv_info.get("ok"):
+                    user_id = conv_info.get("channel", {}).get("user")
+                    if user_id:
+                        members = [user_id]
+            except Exception as e:
+                logger.warning(f"Could not get user for DM {conversation_id}: {e}")
+    elif conversation_info.get("is_mpim"):
+        # Group DM - get all members
+        members = slack_client.get_channel_members(conversation_id)
+    else:
+        # Regular channel - get all members
+        members = slack_client.get_channel_members(conversation_id)
+    
+    return members
+
+
+def share_folder_with_conversation_members(
     google_drive_client: GoogleDriveClient,
     folder_id: str,
     slack_client: SlackClient,
-    channel_id: str,
-    channel_name: str,
-    channel_info: Dict[str, Any],
+    conversation_id: str,
+    conversation_name: str,
+    conversation_info: Dict[str, Any],
     no_notifications_set: set,
     no_share_set: set,
     stats: Dict[str, int],
-    sanitized_folder_name: Optional[str] = None,
+    config_source: str = "channels.json",
 ) -> None:
-    """Share a Google Drive folder with channel members and manage permissions.
+    """Share a Google Drive folder with conversation members and manage permissions.
+
+    Unified function for sharing folders with both API exports (channels) and browser exports (DMs/group DMs).
 
     Args:
         google_drive_client: GoogleDriveClient instance
         folder_id: Google Drive folder ID
         slack_client: SlackClient instance
-        channel_id: Slack channel ID
-        channel_name: Display name of the channel
-        channel_info: Channel configuration dictionary
+        conversation_id: Slack conversation ID
+        conversation_name: Display name of the conversation
+        conversation_info: Conversation configuration dictionary
             - share: bool - whether to share (default: True)
             - shareMembers: Optional[List[str]] - list of user IDs, emails, or display names to share with
+            - is_im: bool - True if DM (for browser exports)
+            - is_mpim: bool - True if group DM (for browser exports)
+            - user: Optional[str] - Other user ID for DMs (for browser exports)
         no_notifications_set: Set of emails who opted out of notifications
         no_share_set: Set of emails who opted out of being shared with
         stats: Statistics dictionary to update
+        config_source: Source of config (for logging) - "channels.json" or "browser-export.json"
     """
     # Check if sharing is enabled
-    should_share = channel_info.get("share", True)
+    should_share = conversation_info.get("share", True)
     if not should_share:
-        logger.info(f"Sharing disabled for {channel_name} (share: false in channels.json)")
+        logger.info(f"Sharing disabled for {conversation_name} (share: false in {config_source})")
         return
 
-    members = slack_client.get_channel_members(channel_id)
+    # Get conversation members based on type
+    members = _get_conversation_members(slack_client, conversation_id, conversation_info)
     if not members:
-        logger.warning(f"No members found for {channel_name}. Skipping sharing.")
+        logger.warning(f"No members found for {conversation_name}. Skipping sharing.")
         return
 
     # Get shareMembers list if provided
-    share_members = channel_info.get("shareMembers")
+    share_members = conversation_info.get("shareMembers")
     # Validate shareMembers is a list if provided
     if share_members is not None:
         if not isinstance(share_members, list):
             logger.warning(
-                f"shareMembers must be a list for {channel_name}, got {type(share_members).__name__}. Ignoring."
+                f"shareMembers must be a list for {conversation_name}, got {type(share_members).__name__}. Ignoring."
             )
             share_members = None
         elif len(share_members) == 0:
@@ -565,7 +620,7 @@ def share_folder_with_members(
             share_members = None
     if share_members:
         logger.info(
-            f"Selective sharing enabled for {channel_name}: sharing with {len(share_members)} specified member(s)"
+            f"Selective sharing enabled for {conversation_name}: sharing with {len(share_members)} specified member(s)"
         )
 
     # Get current folder permissions to identify who should have access removed
@@ -615,7 +670,7 @@ def share_folder_with_members(
                 revoke_errors.append(f"{perm_email}: {str(e)}")
 
     if revoked_count > 0:
-        logger.info(f"Revoked access for {revoked_count} user(s) no longer in {channel_name}")
+        logger.info(f"Revoked access for {revoked_count} user(s) no longer in {conversation_name}")
     if revoke_errors:
         logger.warning(f"Failed to revoke access for some users: {', '.join(revoke_errors)}")
 
@@ -1026,7 +1081,7 @@ def share_folder_for_browser_export(
                 )
                 excluded_count += 1
                 continue
-            
+
             if email not in shared_emails:
                 try:
                     # Check if user has opted out of notifications
@@ -1035,7 +1090,7 @@ def share_folder_for_browser_export(
                         logger.debug(
                             f"User {email} has opted out of notifications, sharing without notification"
                         )
-                    
+
                     shared = google_drive_client.share_folder(
                         folder_id, email, send_notification=send_notification
                     )
@@ -1063,6 +1118,70 @@ def share_folder_for_browser_export(
             logger.info(f"Excluded {excluded_count} member(s) not in shareMembers list")
     else:
         logger.info(f"Shared folder with {len(shared_emails)} participants")
+
+
+# Backward compatibility aliases
+def share_folder_with_members(
+    google_drive_client: GoogleDriveClient,
+    folder_id: str,
+    slack_client: SlackClient,
+    channel_id: str,
+    channel_name: str,
+    channel_info: Dict[str, Any],
+    no_notifications_set: set,
+    no_share_set: set,
+    stats: Dict[str, int],
+    sanitized_folder_name: Optional[str] = None,
+) -> None:
+    """Share a Google Drive folder with channel members and manage permissions.
+
+    This is a backward-compatibility wrapper for share_folder_with_conversation_members().
+    """
+    share_folder_with_conversation_members(
+        google_drive_client=google_drive_client,
+        folder_id=folder_id,
+        slack_client=slack_client,
+        conversation_id=channel_id,
+        conversation_name=channel_name,
+        conversation_info=channel_info,
+        no_notifications_set=no_notifications_set,
+        no_share_set=no_share_set,
+        stats=stats,
+        config_source="channels.json",
+    )
+
+
+def share_folder_for_browser_export(
+    google_drive_client: GoogleDriveClient,
+    folder_id: str,
+    slack_client: SlackClient,
+    conversation_info: Dict[str, Any],
+    conversation_name: str,
+    no_notifications_set: set,
+    no_share_set: set,
+    stats: Dict[str, int],
+) -> None:
+    """Share a Google Drive folder for browser export using the same logic as Slack export.
+
+    This is a backward-compatibility wrapper for share_folder_with_conversation_members().
+    """
+    conversation_id = conversation_info.get("id")
+    if not conversation_id:
+        logger.warning(f"No conversation ID found for {conversation_name}. Cannot share.")
+        return
+    
+    share_folder_with_conversation_members(
+        google_drive_client=google_drive_client,
+        folder_id=folder_id,
+        slack_client=slack_client,
+        conversation_id=conversation_id,
+        conversation_name=conversation_name,
+        conversation_info=conversation_info,
+        no_notifications_set=no_notifications_set,
+        no_share_set=no_share_set,
+        stats=stats,
+        config_source="browser-export.json",
+    )
 
 
 def _load_people_cache():
