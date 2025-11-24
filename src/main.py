@@ -1515,6 +1515,205 @@ def _validate_message(msg: Dict[str, Any]) -> bool:
     return "ts" in msg
 
 
+def _validate_upload_params(
+    messages: List[Dict[str, Any]], stats: Optional[Dict[str, int]]
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Validate messages and initialize statistics dictionary.
+    
+    Args:
+        messages: List of message dictionaries to validate
+        stats: Optional statistics dictionary to initialize
+        
+    Returns:
+        Tuple of (valid_messages, stats)
+    """
+    if stats is None:
+        stats = {
+            "processed": 0,
+            "uploaded": 0,
+            "upload_failed": 0,
+            "total_messages": 0,
+        }
+    # Ensure all required keys exist (for consistency)
+    for key in ["processed", "uploaded", "upload_failed", "total_messages"]:
+        if key not in stats:
+            stats[key] = 0
+
+    # Validate messages before processing
+    invalid_count = 0
+    valid_messages = []
+    for msg in messages:
+        if _validate_message(msg):
+            valid_messages.append(msg)
+        else:
+            invalid_count += 1
+            logger.debug(f"Skipping invalid message (missing required fields): {msg.get('ts', 'no timestamp')}")
+    
+    if invalid_count > 0:
+        logger.warning(f"Skipped {invalid_count} invalid message(s) out of {len(messages)} total")
+    
+    return valid_messages, stats
+
+
+def _check_doc_exists(
+    google_drive_client: GoogleDriveClient, doc_name: str, folder_id: str
+) -> bool:
+    """Check if a Google Doc already exists in the folder.
+    
+    Args:
+        google_drive_client: GoogleDriveClient instance
+        doc_name: Name of the document to check
+        folder_id: Google Drive folder ID
+        
+    Returns:
+        True if document exists, False otherwise
+    """
+    escaped_doc_name = google_drive_client._escape_drive_query_string(doc_name)
+    escaped_folder_id = google_drive_client._escape_drive_query_string(folder_id)
+    query = (
+        f"name='{escaped_doc_name}' and '{escaped_folder_id}' in parents "
+        f"and mimeType='application/vnd.google-apps.document' and trashed=false"
+    )
+
+    try:
+        google_drive_client._rate_limit()
+        results = (
+            google_drive_client.service.files()
+            .list(q=query, fields="files(id, name, modifiedTime)", pageSize=100)
+            .execute()
+        )
+        existing_files = results.get("files", [])
+        if existing_files:
+            if len(existing_files) > 1:
+                logger.warning(
+                    f"Found {len(existing_files)} documents with name '{doc_name}'. "
+                    f"create_or_update_google_doc() will use the most recently modified."
+                )
+            return True
+    except Exception as e:
+        logger.debug(
+            f"Error checking for existing doc '{doc_name}': {e}, assuming new doc",
+            exc_info=True
+        )
+    return False
+
+
+def _create_metadata_header(
+    conversation_name: str,
+    conversation_id: Optional[str],
+    date_key: str,
+    total_messages: int,
+) -> str:
+    """Create metadata header for new Google Docs.
+    
+    Args:
+        conversation_name: Display name of the conversation
+        conversation_id: Slack conversation ID (None for browser exports)
+        date_key: Date key in YYYYMMDD format
+        total_messages: Total number of messages for this day
+        
+    Returns:
+        Metadata header string
+    """
+    export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
+    date_display = date_obj.strftime("%Y-%m-%d")
+    
+    # Format channel ID for metadata header
+    channel_id_display = conversation_id if conversation_id else "[Browser Export - No ID]"
+    
+    return f"""Slack Conversation Export
+Channel: {conversation_name}
+Channel ID: {channel_id_display}
+Export Date: {export_date}
+Date: {date_display}
+Total Messages: {total_messages}
+
+{'='*80}
+
+"""
+
+
+def _upload_message_chunk(
+    google_drive_client: GoogleDriveClient,
+    doc_name: str,
+    folder_id: str,
+    message_chunk: List[Dict[str, Any]],
+    processed_messages: str,
+    conversation_name: str,
+    conversation_id: Optional[str],
+    date_key: str,
+    chunk_idx: int,
+    total_chunks: int,
+    daily_messages_count: int,
+    doc_exists: bool,
+    is_first_chunk: bool,
+    stats: Dict[str, int],
+) -> None:
+    """Upload a single chunk of messages to Google Drive.
+    
+    Args:
+        google_drive_client: GoogleDriveClient instance
+        doc_name: Name of the Google Doc
+        folder_id: Google Drive folder ID
+        message_chunk: List of message dictionaries for this chunk
+        processed_messages: Processed message text for this chunk
+        conversation_name: Display name of the conversation
+        conversation_id: Slack conversation ID (None for browser exports)
+        date_key: Date key in YYYYMMDD format
+        chunk_idx: Current chunk index (1-based)
+        total_chunks: Total number of chunks for this day
+        daily_messages_count: Total messages for this day
+        doc_exists: Whether the document already exists
+        is_first_chunk: Whether this is the first chunk
+        stats: Statistics dictionary to update
+    """
+    chunk_info = (
+        f" (chunk {chunk_idx}/{total_chunks})"
+        if total_chunks > 1
+        else ""
+    )
+    
+    # Check for empty history after processing
+    if not processed_messages or not processed_messages.strip():
+        logger.warning(
+            f"No processable content found for {date_key}{chunk_info} of {conversation_name}. Skipping."
+        )
+        return
+
+    # Prepare content: add header only for first chunk of new docs
+    if doc_exists or not is_first_chunk:
+        # Append separator and messages (no header for existing docs or subsequent chunks)
+        if total_chunks > 1:
+            content_to_add = f"\n\n--- Chunk {chunk_idx} of {total_chunks} ({len(message_chunk)} messages) ---\n\n{processed_messages}"
+        else:
+            content_to_add = f"\n\n{'='*80}\n\n{processed_messages}"
+    else:
+        # Add full header for first chunk of new docs
+        metadata_header = _create_metadata_header(
+            conversation_name, conversation_id, date_key, daily_messages_count
+        )
+        content_to_add = metadata_header + processed_messages
+
+    # Create or update Google Doc (append mode for incremental updates)
+    doc_id = google_drive_client.create_or_update_google_doc(
+        doc_name, content_to_add, folder_id, overwrite=False
+    )
+
+    if not doc_id:
+        logger.error(
+            f"Failed to create Google Doc for {date_key}{chunk_info} of {sanitize_string_for_logging(conversation_name)} "
+            f"(folder_id: {folder_id}, doc_name: {sanitize_string_for_logging(doc_name)})"
+        )
+        stats["upload_failed"] += 1
+    else:
+        if is_first_chunk:
+            stats["uploaded"] += 1
+            stats["processed"] += 1
+        stats["total_messages"] += len(message_chunk)
+        logger.info(f"Created/updated Google Doc for {date_key}{chunk_info}")
+
+
 def upload_messages_to_drive(
     messages: List[Dict[str, Any]],
     conversation_name: str,
@@ -1545,30 +1744,8 @@ def upload_messages_to_drive(
     Returns:
         Statistics dictionary with upload results
     """
-    if stats is None:
-        stats = {
-            "processed": 0,
-            "uploaded": 0,
-            "upload_failed": 0,
-            "total_messages": 0,
-        }
-    # Ensure all required keys exist (for consistency)
-    for key in ["processed", "uploaded", "upload_failed", "total_messages"]:
-        if key not in stats:
-            stats[key] = 0
-
-    # Validate messages before processing
-    invalid_count = 0
-    valid_messages = []
-    for msg in messages:
-        if _validate_message(msg):
-            valid_messages.append(msg)
-        else:
-            invalid_count += 1
-            logger.debug(f"Skipping invalid message (missing required fields): {msg.get('ts', 'no timestamp')}")
-    
-    if invalid_count > 0:
-        logger.warning(f"Skipped {invalid_count} invalid message(s) out of {len(messages)} total")
+    # Validate messages and initialize stats
+    valid_messages, stats = _validate_upload_params(messages, stats)
     
     if not valid_messages:
         logger.warning("No valid messages found to upload")
@@ -1607,7 +1784,6 @@ def upload_messages_to_drive(
         logger.info(f"Processing {len(daily_messages)} messages for date {date_key}")
 
         # Memory management: chunk large daily message groups
-        # Split into chunks if exceeding threshold to prevent memory issues
         if len(daily_messages) > DAILY_MESSAGE_CHUNK_SIZE:
             logger.info(
                 f"Large daily message group detected ({len(daily_messages)} messages). "
@@ -1625,34 +1801,7 @@ def upload_messages_to_drive(
         doc_name = sanitize_folder_name(doc_name_base)
 
         # Check if doc already exists to determine if we need a header
-        escaped_doc_name = google_drive_client._escape_drive_query_string(doc_name)
-        escaped_folder_id = google_drive_client._escape_drive_query_string(folder_id)
-        query = (
-            f"name='{escaped_doc_name}' and '{escaped_folder_id}' in parents "
-            f"and mimeType='application/vnd.google-apps.document' and trashed=false"
-        )
-
-        doc_exists = False
-        try:
-            google_drive_client._rate_limit()
-            results = (
-                google_drive_client.service.files()
-                .list(q=query, fields="files(id, name, modifiedTime)", pageSize=100)
-                .execute()
-            )
-            existing_files = results.get("files", [])
-            if existing_files:
-                doc_exists = True
-                if len(existing_files) > 1:
-                    logger.warning(
-                        f"Found {len(existing_files)} documents with name '{doc_name}'. "
-                        f"create_or_update_google_doc() will use the most recently modified."
-                    )
-        except Exception as e:
-            logger.debug(
-                f"Error checking for existing doc '{doc_name}': {e}, assuming new doc",
-                exc_info=True
-            )
+        doc_exists = _check_doc_exists(google_drive_client, doc_name, folder_id)
 
         # Process each chunk for this day
         is_first_chunk = True
@@ -1676,58 +1825,23 @@ def upload_messages_to_drive(
                     message_chunk, slack_client, people_cache
                 )
 
-            # Check for empty history after processing
-            if not processed_messages or not processed_messages.strip():
-                logger.warning(
-                    f"No processable content found for {date_key}{chunk_info} of {conversation_name}. Skipping."
-                )
-                continue
-
-            # Prepare content: add header only for first chunk of new docs
-            if doc_exists or not is_first_chunk:
-                # Append separator and messages (no header for existing docs or subsequent chunks)
-                if len(message_chunks) > 1:
-                    content_to_add = f"\n\n--- Chunk {chunk_idx} of {len(message_chunks)} ({len(message_chunk)} messages) ---\n\n{processed_messages}"
-                else:
-                    content_to_add = f"\n\n{'='*80}\n\n{processed_messages}"
-            else:
-                # Add full header for first chunk of new docs
-                export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
-                date_display = date_obj.strftime("%Y-%m-%d")
-                
-                # Format channel ID for metadata header
-                channel_id_display = conversation_id if conversation_id else "[Browser Export - No ID]"
-                
-                metadata_header = f"""Slack Conversation Export
-Channel: {conversation_name}
-Channel ID: {channel_id_display}
-Export Date: {export_date}
-Date: {date_display}
-Total Messages: {len(daily_messages)}
-
-{'='*80}
-
-"""
-                content_to_add = metadata_header + processed_messages
-
-            # Create or update Google Doc (append mode for incremental updates)
-            doc_id = google_drive_client.create_or_update_google_doc(
-                doc_name, content_to_add, folder_id, overwrite=False
+            # Upload chunk using helper function
+            _upload_message_chunk(
+                google_drive_client=google_drive_client,
+                doc_name=doc_name,
+                folder_id=folder_id,
+                message_chunk=message_chunk,
+                processed_messages=processed_messages,
+                conversation_name=conversation_name,
+                conversation_id=conversation_id,
+                date_key=date_key,
+                chunk_idx=chunk_idx,
+                total_chunks=len(message_chunks),
+                daily_messages_count=len(daily_messages),
+                doc_exists=doc_exists,
+                is_first_chunk=is_first_chunk,
+                stats=stats,
             )
-
-            if not doc_id:
-                logger.error(
-                    f"Failed to create Google Doc for {date_key}{chunk_info} of {sanitize_string_for_logging(conversation_name)} "
-                    f"(folder_id: {folder_id}, doc_name: {sanitize_string_for_logging(doc_name)})"
-                )
-                stats["upload_failed"] += 1
-            else:
-                if is_first_chunk:
-                    stats["uploaded"] += 1
-                    stats["processed"] += 1
-                stats["total_messages"] += len(message_chunk)
-                logger.info(f"Created/updated Google Doc for {date_key}{chunk_info}")
 
             is_first_chunk = False
 
