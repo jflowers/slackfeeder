@@ -48,12 +48,13 @@ class GoogleDriveClient:
             self.creds = self._authenticate(credentials_file)
             if not self.creds:
                 raise ValueError("Failed to obtain valid credentials")
-            # Create HTTP client with timeout
+            # Create HTTP client with timeout and authorize with credentials
             http = httplib2.Http(timeout=API_TIMEOUT_SECONDS)
-            self.service = build("drive", "v3", credentials=self.creds, http=http)
+            http = self.creds.authorize(http)
+            self.service = build("drive", "v3", http=http)
             if not self.service:
                 raise ValueError("Failed to build Google Drive service")
-            self.docs_service = build("docs", "v1", credentials=self.creds, http=http)
+            self.docs_service = build("docs", "v1", http=http)
             if not self.docs_service:
                 raise ValueError("Failed to build Google Docs service")
             # Rate limiting state
