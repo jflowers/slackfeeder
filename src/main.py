@@ -1227,6 +1227,64 @@ def _load_people_cache():
     return people_cache, no_notifications_set, no_share_set
 
 
+def filter_messages_by_date_range(
+    messages: List[Dict[str, Any]],
+    oldest_ts: Optional[str],
+    latest_ts: Optional[str],
+    validate_range: bool = True,
+    max_date_range_days: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Filter messages by date range and validate date range logic.
+
+    Args:
+        messages: List of message dictionaries to filter
+        oldest_ts: Optional oldest timestamp (Unix timestamp string)
+        latest_ts: Optional latest timestamp (Unix timestamp string)
+        validate_range: Whether to validate that oldest_ts < latest_ts
+        max_date_range_days: Optional maximum date range in days (for validation)
+
+    Returns:
+        Tuple of (filtered_messages, error_message)
+        - filtered_messages: Filtered list of messages
+        - error_message: None if successful, error message string if validation failed
+    """
+    # Validate date range logic
+    if validate_range and oldest_ts and latest_ts:
+        if float(oldest_ts) > float(latest_ts):
+            return [], f"Start date ({oldest_ts}) must be before end date ({latest_ts})"
+
+        # Validate date range doesn't exceed maximum if specified
+        if max_date_range_days:
+            date_range_days = (float(latest_ts) - float(oldest_ts)) / SECONDS_PER_DAY
+            if date_range_days > max_date_range_days:
+                return [], (
+                    f"Date range ({date_range_days:.0f} days) exceeds maximum allowed "
+                    f"({max_date_range_days} days). Use --bulk-export to override."
+                )
+
+    # Filter messages by date range if specified
+    if oldest_ts or latest_ts:
+        filtered_messages = []
+        oldest_float = float(oldest_ts) if oldest_ts else 0.0
+        latest_float = float(latest_ts) if latest_ts else float("inf")
+
+        for msg in messages:
+            msg_ts = msg.get("ts")
+            if msg_ts:
+                msg_ts_float = float(msg_ts)
+                if msg_ts_float >= oldest_float and msg_ts_float <= latest_float:
+                    filtered_messages.append(msg)
+
+        logger.info(
+            f"Filtered {len(messages)} messages to {len(filtered_messages)} "
+            f"messages in date range"
+        )
+        return filtered_messages, None
+
+    # No filtering needed
+    return messages, None
+
+
 def get_oldest_timestamp_for_export(
     google_drive_client: Optional[GoogleDriveClient],
     folder_id: Optional[str],
@@ -1708,23 +1766,26 @@ def main(args):
                 stats["skipped"] += 1
                 continue
 
-            # Validate date range logic
-            if oldest_ts and latest_ts:
-                if float(oldest_ts) > float(latest_ts):
-                    logger.error(
-                        f"Start date ({args.start_date or 'last export'}) must be before end date ({args.end_date})"
-                    )
-                    stats["skipped"] += 1
-                    continue
+            # Validate date range (for API exports, filtering happens at fetch time via timestamps)
+            # Use filter function for validation only
+            _, error_msg = filter_messages_by_date_range(
+                messages=[],  # Empty list - we're just validating, not filtering
+                oldest_ts=oldest_ts,
+                latest_ts=latest_ts,
+                validate_range=True,
+                max_date_range_days=effective_max_date_range,
+            )
 
-                # Validate date range doesn't exceed maximum (unless bulk export)
-                date_range_days = (float(latest_ts) - float(oldest_ts)) / SECONDS_PER_DAY
-                if effective_max_date_range and date_range_days > effective_max_date_range:
-                    logger.error(
-                        f"Date range ({date_range_days:.0f} days) exceeds maximum allowed ({effective_max_date_range} days). Use --bulk-export to override."
-                    )
-                    stats["skipped"] += 1
-                    continue
+            if error_msg:
+                # Format error message with user-friendly dates
+                if "Start date" in error_msg:
+                    error_msg = error_msg.replace(
+                        f"Start date ({oldest_ts})",
+                        f"Start date ({args.start_date or 'last export'})"
+                    ).replace(f"end date ({latest_ts})", f"end date ({args.end_date})")
+                logger.error(error_msg)
+                stats["skipped"] += 1
+                continue
 
             history = slack_client.fetch_channel_history(
                 channel_id, oldest_ts=oldest_ts, latest_ts=latest_ts
@@ -2451,6 +2512,7 @@ if __name__ == "__main__":
             logger.error(f"Invalid start date format: {args.start_date}")
             sys.exit(1)
 
+        # Validate and filter messages by date range
         latest_ts = None
         if args.end_date:
             latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
@@ -2459,32 +2521,20 @@ if __name__ == "__main__":
                 sys.exit(1)
             logger.info(f"Filtering messages until: {args.end_date} ({latest_ts})")
 
-        # Validate date range logic
-        if oldest_ts and latest_ts:
-            if float(oldest_ts) > float(latest_ts):
-                logger.error(
-                    f"Start date ({args.start_date or 'last export'}) must be before end date ({args.end_date})"
-                )
-                sys.exit(1)
+        # Filter messages by date range (validation happens inside function)
+        filtered_messages, error_msg = filter_messages_by_date_range(
+            messages=all_messages,
+            oldest_ts=oldest_ts,
+            latest_ts=latest_ts,
+            validate_range=True,
+            max_date_range_days=None,  # Browser exports don't validate against MAX_DATE_RANGE_DAYS
+        )
 
-        # Filter messages by date range if specified
-        if oldest_ts or latest_ts:
-            filtered_messages = []
-            oldest_float = float(oldest_ts) if oldest_ts else 0.0
-            latest_float = float(latest_ts) if latest_ts else float("inf")
-            
-            for msg in all_messages:
-                msg_ts = msg.get("ts")
-                if msg_ts:
-                    msg_ts_float = float(msg_ts)
-                    if msg_ts_float >= oldest_float and msg_ts_float <= latest_float:
-                        filtered_messages.append(msg)
-            
-            logger.info(
-                f"Filtered {len(all_messages)} messages to {len(filtered_messages)} "
-                f"messages in date range"
-            )
-            all_messages = filtered_messages
+        if error_msg:
+            logger.error(error_msg)
+            sys.exit(1)
+
+        all_messages = filtered_messages
 
         if not all_messages:
             logger.warning("No messages found after date range filtering")
