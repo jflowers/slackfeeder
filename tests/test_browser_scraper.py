@@ -283,13 +283,15 @@ class TestBrowserResponseProcessor:
 
     def test_format_message_for_export(self):
         """Test formatting message for export."""
-        processor = BrowserResponseProcessor(user_map={"U123": "Alice"})
+        # Use valid Slack user ID format (U + 8+ chars)
+        user_id = "U1234567890"
+        processor = BrowserResponseProcessor(user_map={user_id: "Alice"})
         message = {
             "ts": "1729263032.513419",
-            "user": "U123",
+            "user": user_id,
             "text": "Hello world",
         }
-        formatted = processor.format_message_for_export(message, {"U123": "Alice"})
+        formatted = processor.format_message_for_export(message, {user_id: "Alice"})
         assert "Alice" in formatted
         assert "Hello world" in formatted
 
@@ -322,17 +324,20 @@ class TestBrowserResponseProcessor:
 
     def test_preprocess_messages_for_google_doc(self):
         """Test preprocessing messages for Google Doc format."""
-        processor = BrowserResponseProcessor(user_map={"U123": "Alice", "U456": "Bob"})
+        # Use valid Slack user ID format (U + 8+ chars)
+        user_id_1 = "U1234567890"
+        user_id_2 = "U0987654321"
+        processor = BrowserResponseProcessor(user_map={user_id_1: "Alice", user_id_2: "Bob"})
         messages = [
             {
                 "ts": "1729263032.513419",
-                "user": "U123",
+                "user": user_id_1,
                 "text": "Hello world",
                 "thread_ts": "1729263032.513419",
             },
             {
                 "ts": "1729263033.513419",
-                "user": "U456",
+                "user": user_id_2,
                 "text": "Hi there",
                 "thread_ts": "1729263032.513419",  # Reply in same thread
             },
@@ -502,13 +507,15 @@ class TestBrowserResponseProcessor:
 
     def test_format_message_for_google_doc(self):
         """Test formatting message for Google Doc (matches main export format)."""
-        processor = BrowserResponseProcessor(user_map={"U123": "Alice"})
+        # Use valid Slack user ID format (U + 8+ chars)
+        user_id = "U1234567890"
+        processor = BrowserResponseProcessor(user_map={user_id: "Alice"})
         message = {
             "ts": "1729263032.513419",
-            "user": "U123",
+            "user": user_id,
             "text": "Hello world",
         }
-        formatted, ts = processor.format_message_for_google_doc(message, {"U123": "Alice"})
+        formatted, ts = processor.format_message_for_google_doc(message, {user_id: "Alice"})
         assert "Alice" in formatted
         assert "Hello world" in formatted
         # Should have timestamp format like [YYYY-MM-DD HH:MM:SS UTC]
