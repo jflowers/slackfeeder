@@ -896,7 +896,7 @@ def select_conversation_from_sidebar(conversation_id: str) -> bool:
     in the sidebar. The conversation is identified by its div ID.
     
     Args:
-        conversation_id: Slack conversation ID (e.g., "D06DDJ2UH2M")
+        conversation_id: Slack conversation ID (e.g., "D1234567890")
         
     Returns:
         True if conversation was successfully selected, False otherwise

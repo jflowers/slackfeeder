@@ -279,13 +279,13 @@ The `config/browser-export.json` file works similarly to `channels.json` for Sla
 {
     "browser-export": [
         {
-            "id": "D06DDJ2UH2M",
-            "name": "Alex Xuan, Jay Flowers",
+            "id": "D1234567890",
+            "name": "Bob Smith, John Doe",
             "is_im": true,
             "is_mpim": false,
             "export": true,
             "share": true,
-            "shareMembers": ["alex.xuan@example.com"]
+            "shareMembers": ["bob.smith@example.com"]
         }
     ]
 }
@@ -301,7 +301,7 @@ The `config/browser-export.json` file works similarly to `channels.json` for Sla
 ```bash
 python src/main.py --browser-export-dm --upload-to-drive \
   --browser-export-config config/browser-export.json \
-  --browser-conversation-name "Alex Xuan, Jay Flowers" \
+  --browser-conversation-name "Bob Smith, John Doe" \
   --start-date 2023-11-29 \
   --end-date 2024-06-05
 ```
@@ -333,7 +333,7 @@ Browser exports use the same sharing logic as Slack API exports:
 
 **⚠️ IMPORTANT: `--browser-export-config` is REQUIRED**
 
-When processing browser exports with `src/main.py --browser-export-dm`, **you must specify `--browser-export-config`** pointing to your browser-export.json file. The conversation name from the config file will be used for folder naming (e.g., `"Tara, Jay Flowers"`), ensuring consistency with your configuration.
+When processing browser exports with `src/main.py --browser-export-dm`, **you must specify `--browser-export-config`** pointing to your browser-export.json file. The conversation name from the config file will be used for folder naming (e.g., `"Alice, John Doe"`), ensuring consistency with your configuration.
 
 You can optionally provide `--browser-conversation-name` or `--browser-conversation-id` to help find the conversation in config, but the actual name from browser-export.json will always be used for folder naming.
 

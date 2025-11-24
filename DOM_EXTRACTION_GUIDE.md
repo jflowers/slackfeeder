@@ -90,17 +90,17 @@ Once extraction is complete:
 ```bash
 python src/main.py --browser-export-dm --upload-to-drive \
   --browser-export-config config/browser-export.json \
-  --browser-conversation-name "Tara, Jay Flowers" \
+  --browser-conversation-name "Alice, John Doe" \
   --start-date 2023-11-29 \
   --end-date 2024-06-05
 ```
-Note: `--browser-export-config` is **required** for browser exports. The conversation name from config will be used (e.g., "Tara, Jay Flowers" from browser-export.json), ensuring consistent folder naming in Google Drive.
+Note: `--browser-export-config` is **required** for browser exports. The conversation name from config will be used (e.g., "Alice, John Doe" from browser-export.json), ensuring consistent folder naming in Google Drive.
 
 **Option B: Using conversation ID from config**
 ```bash
 python src/main.py --browser-export-dm --upload-to-drive \
   --browser-export-config config/browser-export.json \
-  --browser-conversation-id "D067Q2KV8VC" \
+  --browser-conversation-id "D0987654321" \
   --start-date 2023-11-29 \
   --end-date 2024-06-05
 ```
@@ -110,7 +110,7 @@ The conversation name will be automatically loaded from browser-export.json base
 ```bash
 python src/main.py --browser-export-dm --upload-to-drive \
   --browser-export-config config/browser-export.json \
-  --browser-conversation-name "Tara, Jay Flowers" \
+  --browser-conversation-name "Alice, John Doe" \
   --no-select-conversation \
   --start-date 2023-11-29 \
   --end-date 2024-06-05
@@ -118,7 +118,7 @@ python src/main.py --browser-export-dm --upload-to-drive \
 
 **⚠️ CRITICAL: `--browser-export-config` is REQUIRED**
 
-You **must** specify `--browser-export-config` pointing to your browser-export.json file. The conversation name from the config file will be used (e.g., `"Tara, Jay Flowers"`), ensuring consistent folder naming in Google Drive that matches the configured name.
+You **must** specify `--browser-export-config` pointing to your browser-export.json file. The conversation name from the config file will be used (e.g., `"Alice, John Doe"`), ensuring consistent folder naming in Google Drive that matches the configured name.
 
 **Note:** If you provide `--browser-conversation-name`, it will be used to find the conversation in config, but the actual name from config will be used for folder naming. This ensures consistency with your browser-export.json configuration.
 
@@ -217,7 +217,7 @@ python3 scripts/extract_dom_messages.py \
   --mcp-evaluate-script <function> \
   --mcp-press-key <function> \
   --output-to-stdout | \
-  python3 src/main.py --browser-export-dm --browser-conversation-name "Tara" --upload-to-drive
+  python3 src/main.py --browser-export-dm --browser-conversation-name "Alice" --upload-to-drive
 ```
 
 ## Example: Complete Extraction Session
@@ -225,7 +225,7 @@ python3 scripts/extract_dom_messages.py \
 Here's what a successful session looks like:
 
 1. **User request:**
-   > "Please extract messages from the DOM for Tara from January 3rd 2024 to June 5th 2024 and upload to Google Drive"
+   > "Please extract messages from the DOM for Alice from January 3rd 2024 to June 5th 2024 and upload to Google Drive"
 
 2. **Agent actions:**
    - Scrolls backward using `PageUp` keys
@@ -236,7 +236,7 @@ Here's what a successful session looks like:
 
 3. **Result:**
    - Messages extracted and piped directly to `main.py` via stdin
-   - Google Docs created in Google Drive folder "Tara"
+   - Google Docs created in Google Drive folder "Alice"
    - One doc per day with messages (same format as `--export-history`)
 
 ## Tips for Success
@@ -291,7 +291,7 @@ The visible date separators tell you:
 The `config/browser-export.json` file contains a list of conversations to export, similar to `channels.json` for Slack API exports. Each conversation entry includes:
 
 - `id`: Slack conversation ID (e.g., "D06DDJ2UH2M")
-- `name`: Conversation display name (e.g., "Alex Xuan, Jay Flowers")
+- `name`: Conversation display name (e.g., "Bob Smith, John Doe")
 - `is_im`: Boolean indicating if it's a direct message
 - `is_mpim`: Boolean indicating if it's a group message
 - `export`: Boolean indicating if this conversation should be exported
@@ -307,13 +307,13 @@ The `config/browser-export.json` file contains a list of conversations to export
 **Example browser-export.json entry:**
 ```json
 {
-    "id": "D06DDJ2UH2M",
-    "name": "Alex Xuan, Jay Flowers",
+            "id": "D1234567890",
+    "name": "Bob Smith, John Doe",
     "is_im": true,
     "is_mpim": false,
     "export": true,
     "share": true,
-    "shareMembers": ["alex.xuan@example.com"]
+    "shareMembers": ["bob.smith@example.com"]
 }
 ```
 

@@ -392,8 +392,8 @@ Create `config/browser-export.json` with your conversations to export. This file
 {
     "browser-export": [
         {
-            "id": "D06DDJ2UH2M",
-            "name": "Alex Xuan, Jay Flowers",
+            "id": "D1234567890",
+            "name": "Bob Smith, John Doe",
             "is_im": true,
             "is_mpim": false,
             "export": true,
@@ -401,8 +401,8 @@ Create `config/browser-export.json` with your conversations to export. This file
             "shareMembers": []
         },
         {
-            "id": "C073BC2HHUZ",
-            "name": "Emily Fox, Jenn Power, Jay Flowers",
+            "id": "C1234567890",
+            "name": "Carol White, David Brown, John Doe",
             "is_im": false,
             "is_mpim": true,
             "export": true,
@@ -436,7 +436,7 @@ Create `config/browser-export.json` with your conversations to export. This file
    
    Simply ask the Cursor Agent (me) to extract messages from the DOM. I have access to MCP chrome-devtools tools and can run the extraction automatically. For example:
    
-   > "Please extract messages from the DOM for Tara from Nov 1st to Nov 18th"
+   > "Please extract messages from the DOM for Alice from Nov 1st to Nov 18th"
    
    I will automatically:
    - Scroll through the conversation using PageUp keys (to go backward in time)
@@ -470,7 +470,7 @@ Create `config/browser-export.json` with your conversations to export. This file
    ```bash
    python src/main.py --browser-export-dm --upload-to-drive \
      --browser-export-config config/browser-export.json \
-     --browser-conversation-name "Tara, Jay Flowers" \
+     --browser-conversation-name "Alice, John Doe" \
      --start-date 2025-11-01 \
      --end-date 2025-11-18
    ```
@@ -478,12 +478,12 @@ Create `config/browser-export.json` with your conversations to export. This file
    ```bash
    python src/main.py --browser-export-dm \
      --browser-export-config config/browser-export.json \
-     --browser-conversation-name "Tara, Jay Flowers" \
+     --browser-conversation-name "Alice, John Doe" \
      --start-date 2025-11-01 \
      --end-date 2025-11-18
    ```
    
-   **Note:** `--browser-export-config` is **required**. The conversation name from config (e.g., "Tara, Jay Flowers") will be used for folder naming, ensuring consistency.
+   **Note:** `--browser-export-config` is **required**. The conversation name from config (e.g., "Alice, John Doe") will be used for folder naming, ensuring consistency.
 
 ### Command-Line Options
 
@@ -500,7 +500,7 @@ python src/main.py --browser-export-dm [OPTIONS]
 - `--end-date DATE` - Filter messages until this date (YYYY-MM-DD format, optional)
 - `--upload-to-drive` - Upload to Google Drive as Google Docs (same format as Slack App export)
 
-**Important:** The conversation name from `browser-export.json` will always be used for folder naming (e.g., "Tara, Jay Flowers"), ensuring consistency with your configuration. If you provide `--browser-conversation-name`, it's only used to find the conversation in config.
+**Important:** The conversation name from `browser-export.json` will always be used for folder naming (e.g., "Alice, John Doe"), ensuring consistency with your configuration. If you provide `--browser-conversation-name`, it's only used to find the conversation in config.
 
 **Date Range Filtering and Incremental Exports:**
 You can filter messages by date range when processing extracted messages:
@@ -508,7 +508,7 @@ You can filter messages by date range when processing extracted messages:
 # Export only messages from October 2024
 python src/main.py --browser-export-dm \
   --browser-export-config config/browser-export.json \
-  --browser-conversation-name "Tara, Jay Flowers" \
+  --browser-conversation-name "Alice, John Doe" \
   --start-date "2024-10-01" \
   --end-date "2024-10-31"
 ```
@@ -521,12 +521,12 @@ The browser export supports incremental exports just like the main Slack App exp
 # First export - exports all messages
 python src/main.py --browser-export-dm --upload-to-drive \
   --browser-export-config config/browser-export.json \
-  --browser-conversation-name "Tara, Jay Flowers"
+  --browser-conversation-name "Alice, John Doe"
 
 # Second export - automatically picks up from last export (no --start-date needed)
 python src/main.py --browser-export-dm --upload-to-drive \
   --browser-export-config config/browser-export.json \
-  --browser-conversation-name "Tara, Jay Flowers"
+  --browser-conversation-name "Alice, John Doe"
 ```
 
 The incremental export feature:
@@ -541,7 +541,7 @@ The incremental export feature:
 When using `--upload-to-drive`, the browser export:
 - Creates Google Docs with the same naming convention: `{conversation_name} slack messages {yyyymmdd}`
 - Uses the same format as Slack App export (thread grouping, timestamps, etc.)
-- Creates folders named with the conversation name from `browser-export.json` (e.g., "Tara, Jay Flowers")
+- Creates folders named with the conversation name from `browser-export.json` (e.g., "Alice, John Doe")
 - Supports incremental updates (appends to existing docs)
 - Saves export metadata for future incremental exports
 - **Shares folders with participants** using the same logic as Slack API exports (requires `SLACK_BOT_TOKEN`)
@@ -553,7 +553,7 @@ When using `--upload-to-drive`, the browser export:
 **Local Files (without `--upload-to-drive`):**
 Export files are created with format: `YYYY-MM-DD-{conversation_name}.txt`
 
-Example: `2024-10-18-Tara.txt`
+Example: `2024-10-18-Alice.txt`
 
 Each file contains messages from that date, formatted with:
 - User names and timestamps
@@ -564,7 +564,7 @@ Each file contains messages from that date, formatted with:
 **Google Drive (with `--upload-to-drive`):**
 Google Docs are created with format: `{conversation_name} slack messages {yyyymmdd}`
 
-Example: `Tara, Jay Flowers slack messages 20241018`
+Example: `Alice, John Doe slack messages 20241018`
 
 The conversation name comes from `browser-export.json`, ensuring consistent folder and file naming.
 

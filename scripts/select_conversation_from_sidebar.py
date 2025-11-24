@@ -29,7 +29,7 @@ def select_conversation_instructions(conversation_id: str) -> dict:
     a conversation from the Slack sidebar using MCP chrome-devtools tools.
     
     Args:
-        conversation_id: Slack conversation ID (e.g., "D06DDJ2UH2M")
+        conversation_id: Slack conversation ID (e.g., "D1234567890")
         
     Returns:
         Dictionary with instructions for the agent

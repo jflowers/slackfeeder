@@ -898,8 +898,8 @@ class TestLoadBrowserExportConfig:
         config_data = {
             "browser-export": [
                 {
-                    "id": "D06DDJ2UH2M",
-                    "name": "Alex Xuan, Jay Flowers",
+                    "id": "D1234567890",
+                    "name": "Bob Smith, John Doe",
                     "is_im": True,
                     "is_mpim": False,
                     "export": True,
@@ -913,7 +913,7 @@ class TestLoadBrowserExportConfig:
         assert result is not None
         assert "browser-export" in result
         assert len(result["browser-export"]) == 1
-        assert result["browser-export"][0]["id"] == "D06DDJ2UH2M"
+        assert result["browser-export"][0]["id"] == "D1234567890"
 
     def test_load_nonexistent_file(self):
         """Test loading a nonexistent config file."""
@@ -949,41 +949,41 @@ class TestFindConversationInConfig:
         config_data = {
             "browser-export": [
                 {
-                    "id": "D06DDJ2UH2M",
-                    "name": "Alex Xuan, Jay Flowers",
+                    "id": "D1234567890",
+                    "name": "Bob Smith, John Doe",
                     "is_im": True,
                 },
                 {
-                    "id": "C073BC2HHUZ",
-                    "name": "Emily Fox, Jenn Power, Jay Flowers",
+                    "id": "C1234567890",
+                    "name": "Carol White, David Brown, John Doe",
                     "is_mpim": True,
                 },
             ]
         }
 
-        result = find_conversation_in_config(config_data, conversation_id="D06DDJ2UH2M")
+        result = find_conversation_in_config(config_data, conversation_id="D1234567890")
         assert result is not None
-        assert result["id"] == "D06DDJ2UH2M"
-        assert result["name"] == "Alex Xuan, Jay Flowers"
+        assert result["id"] == "D1234567890"
+        assert result["name"] == "Bob Smith, John Doe"
 
     def test_find_by_name(self):
         """Test finding conversation by name."""
         config_data = {
             "browser-export": [
                 {
-                    "id": "D06DDJ2UH2M",
-                    "name": "Alex Xuan, Jay Flowers",
+                    "id": "D1234567890",
+                    "name": "Bob Smith, John Doe",
                     "is_im": True,
                 },
             ]
         }
 
         result = find_conversation_in_config(
-            config_data, conversation_name="Alex Xuan, Jay Flowers"
+            config_data, conversation_name="Bob Smith, John Doe"
         )
         assert result is not None
-        assert result["id"] == "D06DDJ2UH2M"
-        assert result["name"] == "Alex Xuan, Jay Flowers"
+        assert result["id"] == "D1234567890"
+        assert result["name"] == "Bob Smith, John Doe"
 
     def test_find_not_found(self):
         """Test finding conversation that doesn't exist."""
@@ -994,7 +994,7 @@ class TestFindConversationInConfig:
 
     def test_find_empty_config(self):
         """Test finding in empty config."""
-        result = find_conversation_in_config(None, conversation_id="D06DDJ2UH2M")
+        result = find_conversation_in_config(None, conversation_id="D1234567890")
         assert result is None
 
     def test_find_prefers_id_over_name(self):
@@ -1002,23 +1002,23 @@ class TestFindConversationInConfig:
         config_data = {
             "browser-export": [
                 {
-                    "id": "D06DDJ2UH2M",
-                    "name": "Alex Xuan, Jay Flowers",
+                    "id": "D1234567890",
+                    "name": "Bob Smith, John Doe",
                     "is_im": True,
                 },
                 {
-                    "id": "C073BC2HHUZ",
-                    "name": "Alex Xuan, Jay Flowers",  # Same name, different ID
+                    "id": "C1234567890",
+                    "name": "Bob Smith, John Doe",  # Same name, different ID
                     "is_mpim": True,
                 },
             ]
         }
 
         result = find_conversation_in_config(
-            config_data, conversation_id="D06DDJ2UH2M", conversation_name="Alex Xuan, Jay Flowers"
+            config_data, conversation_id="D1234567890", conversation_name="Bob Smith, John Doe"
         )
         assert result is not None
-        assert result["id"] == "D06DDJ2UH2M"  # Should find by ID first
+        assert result["id"] == "D1234567890"  # Should find by ID first
 
 
 class TestInitializeStats:
