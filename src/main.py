@@ -561,14 +561,91 @@ def _validate_conversation_id(conversation_id: str) -> bool:
     return conversation_id[0] in ['C', 'D', 'G'] and conversation_id[1:].isalnum()
 
 
+def _resolve_member_identifier(
+    identifier: str,
+    slack_client: SlackClient,
+    people_cache: Optional[Dict[str, str]] = None,
+    people_json: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, str]]:
+    """Resolve a member identifier (user ID, email, or display name) to user info.
+    
+    Uses fallback chain:
+    1. If identifier is a Slack user ID (starts with U), try Slack API
+    2. Look up in people.json by slackId, email, or displayName
+    3. Fall back to Slack API (if identifier looks like a user ID)
+    
+    Args:
+        identifier: Member identifier (user ID, email, or display name)
+        slack_client: SlackClient instance
+        people_cache: Optional dict mapping slackId -> displayName
+        people_json: Optional full people.json dict with "people" list
+    
+    Returns:
+        User info dict with slackId, email, displayName, or None if not found
+    """
+    if not identifier:
+        return None
+    
+    identifier_lower = identifier.lower().strip()
+    
+    # Step 1: Check if it's already a Slack user ID (starts with U)
+    if identifier.startswith("U") and len(identifier) > 1:
+        # Try Slack API first for user IDs
+        try:
+            user_info = slack_client.get_user_info(identifier)
+            if user_info:
+                return user_info
+        except Exception as e:
+            logger.debug(f"Could not get user info from Slack API for {identifier}: {e}")
+    
+    # Step 2: Look up in people.json
+    if people_json and "people" in people_json:
+        for person in people_json["people"]:
+            # Match by slackId
+            if person.get("slackId", "").lower() == identifier_lower:
+                return {
+                    "slackId": person.get("slackId", ""),
+                    "email": person.get("email", ""),
+                    "displayName": person.get("displayName", ""),
+                }
+            # Match by email
+            if person.get("email", "").lower() == identifier_lower:
+                return {
+                    "slackId": person.get("slackId", ""),
+                    "email": person.get("email", ""),
+                    "displayName": person.get("displayName", ""),
+                }
+            # Match by displayName (case-insensitive)
+            if person.get("displayName", "").lower() == identifier_lower:
+                return {
+                    "slackId": person.get("slackId", ""),
+                    "email": person.get("email", ""),
+                    "displayName": person.get("displayName", ""),
+                }
+    
+    # Step 3: Fall back to Slack API (if identifier looks like a user ID)
+    if identifier.startswith("U") and len(identifier) > 1:
+        try:
+            user_info = slack_client.get_user_info(identifier)
+            if user_info:
+                return user_info
+        except Exception as e:
+            logger.debug(f"Could not get user info from Slack API for {identifier}: {e}")
+    
+    return None
+
+
 def _get_conversation_members(
     slack_client: SlackClient,
     conversation_id: str,
     conversation_info: Dict[str, Any],
+    people_cache: Optional[Dict[str, str]] = None,
+    people_json: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Get conversation members based on conversation type.
 
     Handles channels, DMs, and group DMs appropriately.
+    For browser exports, uses fallback chain: browser-export.json members -> people.json -> Slack API.
 
     Args:
         slack_client: SlackClient instance
@@ -577,9 +654,12 @@ def _get_conversation_members(
             - is_im: bool - True if DM
             - is_mpim: bool - True if group DM
             - user: Optional[str] - Other user ID for DMs
+            - members: Optional[List[str]] - List of member identifiers (for browser exports)
+        people_cache: Optional dict mapping slackId -> displayName
+        people_json: Optional full people.json dict with "people" list
 
     Returns:
-        List of member user IDs
+        List of member user IDs (or emails if user ID not available)
     """
     members = []
     
@@ -587,6 +667,26 @@ def _get_conversation_members(
     if not _validate_conversation_id(conversation_id):
         logger.warning(f"Invalid conversation ID format: {sanitize_string_for_logging(conversation_id)}")
         return []
+    
+    # For browser exports, check members list first
+    browser_members = conversation_info.get("members")
+    if browser_members and isinstance(browser_members, list) and len(browser_members) > 0:
+        logger.debug(f"Using members list from browser-export.json for {sanitize_string_for_logging(conversation_info.get('name', conversation_id))}")
+        resolved_members = []
+        for member_identifier in browser_members:
+            user_info = _resolve_member_identifier(member_identifier, slack_client, people_cache, people_json)
+            if user_info:
+                # Prefer slackId, fall back to email
+                member_id = user_info.get("slackId") or user_info.get("email")
+                if member_id:
+                    resolved_members.append(member_id)
+                else:
+                    logger.warning(f"Could not resolve member identifier: {sanitize_string_for_logging(member_identifier)}")
+            else:
+                logger.debug(f"Could not resolve member identifier: {sanitize_string_for_logging(member_identifier)}")
+        if resolved_members:
+            return resolved_members
+        # If members list exists but couldn't resolve any, continue to fallback logic
     
     if conversation_info.get("is_im"):
         # DM - get the other user
@@ -603,7 +703,7 @@ def _get_conversation_members(
                     if user_id:
                         members = [user_id]
             except Exception as e:
-                logger.warning(f"Could not get user for DM {sanitize_string_for_logging(conversation_id)}: {e}", exc_info=True)
+                logger.debug(f"Could not get user for DM {sanitize_string_for_logging(conversation_id)}: {e}")
     elif conversation_info.get("is_mpim"):
         # Group DM - get all members
         members = slack_client.get_channel_members(conversation_id)
@@ -625,6 +725,8 @@ def share_folder_with_conversation_members(
     no_share_set: set,
     stats: Dict[str, int],
     config_source: str = CHANNELS_CONFIG_FILENAME,
+    people_cache: Optional[Dict[str, str]] = None,
+    people_json: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Share a Google Drive folder with conversation members and manage permissions.
 
@@ -642,10 +744,13 @@ def share_folder_with_conversation_members(
             - is_im: bool - True if DM (for browser exports)
             - is_mpim: bool - True if group DM (for browser exports)
             - user: Optional[str] - Other user ID for DMs (for browser exports)
+            - members: Optional[List[str]] - List of member identifiers (for browser exports)
         no_notifications_set: Set of emails who opted out of notifications
         no_share_set: Set of emails who opted out of being shared with
         stats: Statistics dictionary to update
         config_source: Source of config (for logging) - CHANNELS_CONFIG_FILENAME or BROWSER_EXPORT_CONFIG_FILENAME
+        people_cache: Optional dict mapping slackId -> displayName
+        people_json: Optional full people.json dict with "people" list
     """
     # Check if sharing is enabled
     should_share = conversation_info.get("share", True)
@@ -654,7 +759,7 @@ def share_folder_with_conversation_members(
         return
 
     # Get conversation members based on type
-    members = _get_conversation_members(slack_client, conversation_id, conversation_info)
+    members = _get_conversation_members(slack_client, conversation_id, conversation_info, people_cache, people_json)
     if not members:
         logger.warning(f"No members found for {sanitize_string_for_logging(conversation_name)}. Skipping sharing.")
         return
@@ -682,14 +787,26 @@ def share_folder_with_conversation_members(
 
     # Build set of current member emails (only those who should have access)
     for member_id in members:
-        user_info = slack_client.get_user_info(member_id)
-        if user_info and user_info.get("email"):
-            email = user_info["email"]
-            if validate_email(email):
-                # Check if member should be shared with (respects shareMembers and no_share_set)
-                if email.lower() not in no_share_set:
-                    if _should_share_with_member(member_id, user_info, share_members):
-                        current_member_emails.add(email.lower())
+        # Handle both user IDs and emails
+        email = None
+        user_info = None
+        
+        # Check if member_id is already an email
+        if validate_email(member_id):
+            email = member_id.lower()
+            # Try to get user info for email (for display name, etc.)
+            user_info = _resolve_member_identifier(member_id, slack_client, people_cache, people_json)
+        else:
+            # Assume it's a user ID, get user info
+            user_info = slack_client.get_user_info(member_id)
+            if user_info and user_info.get("email"):
+                email = user_info["email"].lower()
+        
+        if email and validate_email(email):
+            # Check if member should be shared with (respects shareMembers and no_share_set)
+            if email not in no_share_set:
+                if _should_share_with_member(member_id, user_info, share_members):
+                    current_member_emails.add(email)
 
     # Revoke access for people who are no longer members
     revoked_count = 0
@@ -738,50 +855,62 @@ def share_folder_with_conversation_members(
         if i > 0 and i % SHARE_RATE_LIMIT_INTERVAL == 0:
             time.sleep(SHARE_RATE_LIMIT_DELAY)
 
-        user_info = slack_client.get_user_info(member_id)
-        if user_info and user_info.get("email"):
-            email = user_info["email"]
-            # Validate email format
-            if not validate_email(email):
-                logger.warning(f"Invalid email format: {sanitize_string_for_logging(email)}. Skipping.")
-                continue
+        # Handle both user IDs and emails
+        email = None
+        user_info = None
+        
+        # Check if member_id is already an email
+        if validate_email(member_id):
+            email = member_id.lower()
+            # Try to get user info for email (for display name, etc.)
+            user_info = _resolve_member_identifier(member_id, slack_client, people_cache, people_json)
+        else:
+            # Assume it's a user ID, get user info
+            user_info = slack_client.get_user_info(member_id)
+            if user_info and user_info.get("email"):
+                email = user_info["email"].lower()
+        
+        if not email or not validate_email(email):
+            logger.warning(f"Invalid email format or could not resolve member: {sanitize_string_for_logging(member_id)}. Skipping.")
+            continue
 
-            # Skip if user has opted out of being shared with
-            if email.lower() in no_share_set:
-                logger.debug(f"User {sanitize_string_for_logging(email)} has opted out of being shared with, skipping")
-                excluded_count += 1
-                continue
+        # Skip if user has opted out of being shared with
+        if email in no_share_set:
+            logger.debug(f"User {sanitize_string_for_logging(email)} has opted out of being shared with, skipping")
+            excluded_count += 1
+            continue
 
-            # Check if member should be shared with based on shareMembers list
-            if not _should_share_with_member(member_id, user_info, share_members):
-                logger.debug(
-                    f"User {email} ({user_info.get('displayName', member_id)}) not in shareMembers list, skipping"
-                )
-                excluded_count += 1
-                continue
+        # Check if member should be shared with based on shareMembers list
+        if not _should_share_with_member(member_id, user_info, share_members):
+            display_name = user_info.get("displayName", member_id) if user_info else member_id
+            logger.debug(
+                f"User {email} ({display_name}) not in shareMembers list, skipping"
+            )
+            excluded_count += 1
+            continue
 
-            if email not in shared_emails:
-                try:
-                    # Check if user has opted out of notifications
-                    send_notification = email.lower() not in no_notifications_set
-                    if not send_notification:
-                        logger.debug(
-                            f"User {email} has opted out of notifications, sharing without notification"
-                        )
-
-                    shared = google_drive_client.share_folder(
-                        folder_id, email, send_notification=send_notification
+        if email not in shared_emails:
+            try:
+                # Check if user has opted out of notifications
+                send_notification = email not in no_notifications_set
+                if not send_notification:
+                    logger.debug(
+                        f"User {email} has opted out of notifications, sharing without notification"
                     )
-                    if shared:
-                        shared_emails.add(email)
-                        stats["shared"] += 1
-                    else:
-                        share_errors.append(f"{email}: share failed")
-                        share_failures += 1
-                except Exception as e:
-                    logger.debug(f"Error sharing folder with {sanitize_string_for_logging(email)}: {e}", exc_info=True)
-                    share_errors.append(f"{email}: {str(e)}")
+
+                shared = google_drive_client.share_folder(
+                    folder_id, email, send_notification=send_notification
+                )
+                if shared:
+                    shared_emails.add(email)
+                    stats["shared"] += 1
+                else:
+                    share_errors.append(f"{email}: share failed")
                     share_failures += 1
+            except Exception as e:
+                logger.debug(f"Error sharing folder with {sanitize_string_for_logging(email)}: {e}", exc_info=True)
+                share_errors.append(f"{email}: {str(e)}")
+                share_failures += 1
 
     stats["share_failed"] += share_failures
 
@@ -1189,6 +1318,8 @@ def share_folder_with_members(
     no_share_set: set,
     stats: Dict[str, int],
     sanitized_folder_name: Optional[str] = None,
+    people_cache: Optional[Dict[str, str]] = None,
+    people_json: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Share a Google Drive folder with channel members and manage permissions.
 
@@ -1205,6 +1336,8 @@ def share_folder_with_members(
         no_share_set=no_share_set,
         stats=stats,
         config_source="channels.json",
+        people_cache=people_cache,
+        people_json=people_json,
     )
 
 
@@ -1217,6 +1350,8 @@ def share_folder_for_browser_export(
     no_notifications_set: set,
     no_share_set: set,
     stats: Dict[str, int],
+    people_cache: Optional[Dict[str, str]] = None,
+    people_json: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Share a Google Drive folder for browser export using the same logic as Slack export.
 
@@ -1238,14 +1373,16 @@ def share_folder_for_browser_export(
         no_share_set=no_share_set,
         stats=stats,
         config_source=BROWSER_EXPORT_CONFIG_FILENAME,
+        people_cache=people_cache,
+        people_json=people_json,
     )
 
 
-def _load_people_cache() -> Tuple[Dict[str, str], Set[str], Set[str]]:
+def _load_people_cache() -> Tuple[Dict[str, str], Set[str], Set[str], Optional[Dict[str, Any]]]:
     """Load people.json cache and opt-out sets.
 
     Returns:
-        Tuple of (people_cache dict, no_notifications_set, no_share_set)
+        Tuple of (people_cache dict, no_notifications_set, no_share_set, people_json)
     """
     people_cache = {}
     no_notifications_set = set()  # Set of emails who have opted out of notifications
@@ -1260,6 +1397,7 @@ def _load_people_cache() -> Tuple[Dict[str, str], Set[str], Set[str]]:
                 f"Invalid people.json structure: {e}. Will lookup users on-demand from Slack API."
             )
             people_cache = {}
+            people_json = None  # Don't use invalid JSON
         else:
             people_cache = {p["slackId"]: p["displayName"] for p in people_json.get("people", [])}
             # Build sets of opt-out preferences
@@ -1281,7 +1419,8 @@ def _load_people_cache() -> Tuple[Dict[str, str], Set[str], Set[str]]:
                 )
     else:
         logger.info("No people.json found - will lookup users on-demand from Slack API")
-    return people_cache, no_notifications_set, no_share_set
+        people_json = None
+    return people_cache, no_notifications_set, no_share_set, people_json
 
 
 def filter_messages_by_date_range(
@@ -1987,7 +2126,7 @@ def main(args: argparse.Namespace) -> None:
         logger.info(f"Found {len(channels_to_export)} conversation(s) to export")
 
         # Load people.json cache and opt-out sets
-        people_cache, no_notifications_set, no_share_set = _load_people_cache()
+        people_cache, no_notifications_set, no_share_set, people_json = _load_people_cache()
 
         # Setup output directory
         output_dir = _setup_output_directory()
@@ -2161,6 +2300,8 @@ def main(args: argparse.Namespace) -> None:
                         no_share_set,
                         stats,
                         sanitized_folder_name=sanitized_folder_name,
+                        people_cache=people_cache,
+                        people_json=people_json,
                     )
                 else:
                     logger.warning(f"Could not get folder ID for sharing {channel_name}")
@@ -2333,6 +2474,8 @@ Chunk: {chunk_idx} of {len(chunks)}
                             no_share_set,
                             stats,
                             sanitized_folder_name=sanitized_names["folder"],
+                            people_cache=people_cache,
+                            people_json=people_json,
                         )
                     continue  # Skip single file processing for chunked exports
 
@@ -2905,7 +3048,7 @@ if __name__ == "__main__":
                     try:
                         slack_client = SlackClient(slack_bot_token)
                         # Load people cache and opt-out sets
-                        people_cache, no_notifications_set, no_share_set = _load_people_cache()
+                        people_cache, no_notifications_set, no_share_set, people_json = _load_people_cache()
                         
                         # Add sharing stats to stats dict
                         stats["shared"] = 0
@@ -2921,6 +3064,8 @@ if __name__ == "__main__":
                             no_notifications_set,
                             no_share_set,
                             stats,
+                            people_cache=people_cache,
+                            people_json=people_json,
                         )
                     except Exception as e:
                         logger.warning(f"Failed to share folder (Slack client error): {e}", exc_info=True)
