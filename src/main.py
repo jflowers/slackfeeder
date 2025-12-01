@@ -635,6 +635,52 @@ def _resolve_member_identifier(
     return None
 
 
+def _extract_members_from_conversation_name(
+    conversation_name: str,
+    slack_client: SlackClient,
+    people_cache: Optional[Dict[str, str]] = None,
+    people_json: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Extract participant names from conversation name and resolve them to user IDs/emails.
+    
+    Parses conversation names like "Tara, Jay Flowers" or "Emily Fox, Jenn Power, rzhukov, Jay Flowers"
+    and resolves each name to a user ID or email using people.json or Slack API.
+    
+    Args:
+        conversation_name: Conversation display name (e.g., "Tara, Jay Flowers")
+        slack_client: SlackClient instance
+        people_cache: Optional dict mapping slackId -> displayName
+        people_json: Optional full people.json dict with "people" list
+    
+    Returns:
+        List of resolved member identifiers (user IDs or emails)
+    """
+    if not conversation_name:
+        return []
+    
+    # Split by comma and clean up names
+    name_parts = [name.strip() for name in conversation_name.split(",")]
+    if not name_parts:
+        return []
+    
+    resolved_members = []
+    for name in name_parts:
+        if not name:
+            continue
+        
+        # Try to resolve the name to a user ID or email
+        user_info = _resolve_member_identifier(name, slack_client, people_cache, people_json)
+        if user_info:
+            # Prefer slackId, fall back to email
+            member_id = user_info.get("slackId") or user_info.get("email")
+            if member_id and member_id not in resolved_members:
+                resolved_members.append(member_id)
+        else:
+            logger.debug(f"Could not resolve participant name '{sanitize_string_for_logging(name)}' from conversation name")
+    
+    return resolved_members
+
+
 def _get_conversation_members(
     slack_client: SlackClient,
     conversation_id: str,
@@ -704,9 +750,34 @@ def _get_conversation_members(
                         members = [user_id]
             except Exception as e:
                 logger.debug(f"Could not get user for DM {sanitize_string_for_logging(conversation_id)}: {e}")
+            
+            # Fallback: Extract participant names from conversation name and resolve them
+            # This handles cases where Slack API fails or conversation name contains participant info
+            if not members:
+                conversation_name = conversation_info.get("name", "")
+                if conversation_name:
+                    logger.debug(f"Attempting to extract members from conversation name: {sanitize_string_for_logging(conversation_name)}")
+                    extracted_members = _extract_members_from_conversation_name(
+                        conversation_name, slack_client, people_cache, people_json
+                    )
+                    if extracted_members:
+                        members = extracted_members
+                        logger.info(f"Resolved {len(members)} member(s) from conversation name for {sanitize_string_for_logging(conversation_name)}")
     elif conversation_info.get("is_mpim"):
         # Group DM - get all members
         members = slack_client.get_channel_members(conversation_id)
+        
+        # Fallback: Extract participant names from conversation name if API fails
+        if not members:
+            conversation_name = conversation_info.get("name", "")
+            if conversation_name:
+                logger.debug(f"Attempting to extract members from group DM name: {sanitize_string_for_logging(conversation_name)}")
+                extracted_members = _extract_members_from_conversation_name(
+                    conversation_name, slack_client, people_cache, people_json
+                )
+                if extracted_members:
+                    members = extracted_members
+                    logger.info(f"Resolved {len(members)} member(s) from conversation name for {sanitize_string_for_logging(conversation_name)}")
     else:
         # Regular channel - get all members
         members = slack_client.get_channel_members(conversation_id)

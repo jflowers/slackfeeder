@@ -11,8 +11,10 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.main import (
+    _extract_members_from_conversation_name,
     _get_conversation_members,
     _initialize_stats,
+    _resolve_member_identifier,
     _should_share_with_member,
     estimate_file_size,
     filter_messages_by_date_range,
@@ -1213,6 +1215,182 @@ class TestGetConversationMembers:
         members = _get_conversation_members(slack_client, "D123456", conversation_info)
 
         assert members == []  # Should return empty list on failure
+
+    def test_get_dm_members_fallback_to_conversation_name(self):
+        """Test fallback to extracting members from conversation name when API fails."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.client = Mock()
+        slack_client.client.conversations_info.return_value = {"ok": False}  # API fails
+        
+        # Mock _resolve_member_identifier to return user info
+        with patch('src.main._resolve_member_identifier') as mock_resolve:
+            mock_resolve.side_effect = lambda name, *args, **kwargs: {
+                "slackId": "U123" if name == "Tara" else None,
+                "email": "tara@example.com" if name == "Tara" else None,
+                "displayName": "Tara" if name == "Tara" else name,
+            } if name == "Tara" else None
+            
+            conversation_info = {
+                "is_im": True,
+                "name": "Tara, Jay Flowers"
+            }
+            members = _get_conversation_members(
+                slack_client, "D123456", conversation_info, people_cache=None, people_json=None
+            )
+            
+            # Should extract "Tara" from conversation name
+            assert len(members) > 0
+            assert "U123" in members or "tara@example.com" in members
+
+    def test_get_group_dm_members_fallback_to_conversation_name(self):
+        """Test fallback to extracting members from group DM name when API fails."""
+        slack_client = Mock(spec=SlackClient)
+        slack_client.get_channel_members.return_value = []  # API returns empty
+        
+        # Mock _resolve_member_identifier to return user info
+        with patch('src.main._resolve_member_identifier') as mock_resolve:
+            def resolve_side_effect(name, *args, **kwargs):
+                if name == "Emily Fox":
+                    return {"slackId": "U456", "email": "emily@example.com", "displayName": "Emily Fox"}
+                elif name == "Jenn Power":
+                    return {"slackId": "U789", "email": "jenn@example.com", "displayName": "Jenn Power"}
+                return None
+            
+            mock_resolve.side_effect = resolve_side_effect
+            
+            conversation_info = {
+                "is_mpim": True,
+                "name": "Emily Fox, Jenn Power, rzhukov, Jay Flowers"
+            }
+            members = _get_conversation_members(
+                slack_client, "G123456", conversation_info, people_cache=None, people_json=None
+            )
+            
+            # Should extract members from conversation name
+            assert len(members) >= 2
+            assert "U456" in members or "emily@example.com" in members
+            assert "U789" in members or "jenn@example.com" in members
+
+
+class TestExtractMembersFromConversationName:
+    """Tests for _extract_members_from_conversation_name function."""
+
+    def test_extract_single_name(self):
+        """Test extracting a single name."""
+        slack_client = Mock(spec=SlackClient)
+        
+        with patch('src.main._resolve_member_identifier') as mock_resolve:
+            mock_resolve.return_value = {
+                "slackId": "U123",
+                "email": "tara@example.com",
+                "displayName": "Tara"
+            }
+            
+            members = _extract_members_from_conversation_name(
+                "Tara", slack_client, people_cache=None, people_json=None
+            )
+            
+            assert len(members) == 1
+            assert "U123" in members
+            mock_resolve.assert_called_once_with("Tara", slack_client, None, None)
+
+    def test_extract_multiple_names(self):
+        """Test extracting multiple names from comma-separated string."""
+        slack_client = Mock(spec=SlackClient)
+        
+        with patch('src.main._resolve_member_identifier') as mock_resolve:
+            def resolve_side_effect(name, *args, **kwargs):
+                if name == "Tara":
+                    return {"slackId": "U123", "email": "tara@example.com", "displayName": "Tara"}
+                elif name == "Jay Flowers":
+                    return {"slackId": "U456", "email": "jay@example.com", "displayName": "Jay Flowers"}
+                return None
+            
+            mock_resolve.side_effect = resolve_side_effect
+            
+            members = _extract_members_from_conversation_name(
+                "Tara, Jay Flowers", slack_client, people_cache=None, people_json=None
+            )
+            
+            assert len(members) == 2
+            assert "U123" in members
+            assert "U456" in members
+            assert mock_resolve.call_count == 2
+
+    def test_extract_with_people_json(self):
+        """Test extracting names using people.json lookup."""
+        slack_client = Mock(spec=SlackClient)
+        people_json = {
+            "people": [
+                {
+                    "slackId": "U123",
+                    "email": "tara@example.com",
+                    "displayName": "Tara"
+                },
+                {
+                    "slackId": "U456",
+                    "email": "jay@example.com",
+                    "displayName": "Jay Flowers"
+                }
+            ]
+        }
+        
+        members = _extract_members_from_conversation_name(
+            "Tara, Jay Flowers", slack_client, people_cache=None, people_json=people_json
+        )
+        
+        assert len(members) == 2
+        assert "U123" in members
+        assert "U456" in members
+
+    def test_extract_handles_unresolvable_names(self):
+        """Test that unresolvable names are skipped."""
+        slack_client = Mock(spec=SlackClient)
+        
+        with patch('src.main._resolve_member_identifier') as mock_resolve:
+            def resolve_side_effect(name, *args, **kwargs):
+                if name == "Tara":
+                    return {"slackId": "U123", "email": "tara@example.com", "displayName": "Tara"}
+                # "Unknown Person" cannot be resolved
+                return None
+            
+            mock_resolve.side_effect = resolve_side_effect
+            
+            members = _extract_members_from_conversation_name(
+                "Tara, Unknown Person", slack_client, people_cache=None, people_json=None
+            )
+            
+            # Should only include resolvable names
+            assert len(members) == 1
+            assert "U123" in members
+
+    def test_extract_empty_string(self):
+        """Test handling empty conversation name."""
+        slack_client = Mock(spec=SlackClient)
+        
+        members = _extract_members_from_conversation_name(
+            "", slack_client, people_cache=None, people_json=None
+        )
+        
+        assert members == []
+
+    def test_extract_fallback_to_email(self):
+        """Test fallback to email when slackId is not available."""
+        slack_client = Mock(spec=SlackClient)
+        
+        with patch('src.main._resolve_member_identifier') as mock_resolve:
+            mock_resolve.return_value = {
+                "slackId": None,  # No Slack ID
+                "email": "tara@example.com",
+                "displayName": "Tara"
+            }
+            
+            members = _extract_members_from_conversation_name(
+                "Tara", slack_client, people_cache=None, people_json=None
+            )
+            
+            assert len(members) == 1
+            assert "tara@example.com" in members
 
 
 class TestGetOldestTimestampForExport:
