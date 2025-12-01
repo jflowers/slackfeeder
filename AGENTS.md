@@ -343,7 +343,7 @@ You can optionally provide `--browser-conversation-name` or `--browser-conversat
 
 1. **Identifying True Date Gaps:** If two non-consecutive date separators are visible in the DOM (e.g., "June 27th" and "July 7th"), this indicates there are **no messages** for the dates between them. This allows you to skip unnecessary scrolling through date ranges with no messages.
 
-2. **Ensuring Complete Day Coverage:** When extracting messages for a specific date, check that the date separator for that day is visible in the DOM. If you see the separator (e.g., "Friday, June 6th"), scroll backward until you see the previous date separator to ensure you've captured all messages from that day.
+2. **Ensuring Complete Day Coverage:** When extracting messages for a specific date, check that the date separator for that day is visible in the DOM. If you see the separator (e.g., "Friday, June 6th"), scroll backward until you see the previous date separator to ensure you've captured all messages from that day. **Note:** `extract_dom_messages.py` automatically performs this check when `start_date` or `end_date` is provided, using JavaScript to detect date separators and verify complete day coverage.
 
 **How to Use Date Separators:**
 
@@ -369,7 +369,7 @@ You can optionally provide `--browser-conversation-name` or `--browser-conversat
 8. **Using response_dom_extraction.json**: Do NOT create or use `response_dom_extraction.json` or any intermediate files. Browser exports use the same code path as `--export-history` and should pipe messages via stdin or pass them directly.
 9. **Not using browser-export.json**: Consider using `--browser-export-config` and `--select-conversation` for automatic conversation selection and consistent sharing logic.
 10. **Sharing without SLACK_BOT_TOKEN**: Browser exports require `SLACK_BOT_TOKEN` to share folders with participants. Without it, sharing will be skipped with a warning.
-11. **Not using date separators**: Always check date separators in snapshots to identify true gaps and ensure complete day coverage. Don't waste time scrolling through date ranges with no messages.
+11. **Not using date separators**: Always check date separators in snapshots to identify true gaps and ensure complete day coverage. Don't waste time scrolling through date ranges with no messages. **Note:** When using `extract_dom_messages.py` with date ranges, the script automatically checks date separators to ensure complete day coverage - you don't need to manually verify this.
 
 ## When Making Changes
 

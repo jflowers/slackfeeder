@@ -434,37 +434,38 @@ Create `config/browser-export.json` with your conversations to export. This file
 
    **Option A: Ask Cursor Agent to extract (Recommended)**
    
-   Simply ask the Cursor Agent (me) to extract messages from the DOM. I have access to MCP chrome-devtools tools and can run the extraction automatically. For example:
+   Simply ask the Cursor Agent (me) to extract messages from the DOM. I have access to MCP `chrome-devtools` tools and can run the extraction automatically. For example:
    
    > "Please extract messages from the DOM for Alice from Nov 1st to Nov 18th"
    
    I will automatically:
-   - Scroll through the conversation using PageUp keys (to go backward in time)
-   - Extract messages as they become visible using JavaScript evaluation
-   - Use `scripts/extract_dom_messages.py` to extract, deduplicate, and combine messages (outputs to stdout)
-   - Pipe messages directly to `src/main.py` via stdin (no intermediate files)
-   - Handle date filtering if you specify a date range
+   - Scroll through the conversation using `chrome-devtools_press_key` (PageUp) to go backward in time.
+   - Extract messages and date separators as they become visible using `chrome-devtools_evaluate_script` with JavaScript from `src/browser_scraper.py`.
+   - Process, deduplicate, and combine the extracted messages.
+   - Pipe messages directly to `src/main.py` via stdin for further processing (no intermediate files).
+   - Handle date filtering based on your specified date range.
    
-   **Important:** The extraction process works incrementally:
-   1. I scroll backward using MCP `press_key` tools
-   2. I extract messages using MCP `evaluate_script` with JavaScript from `src/browser_scraper.py`
-   3. I use `extract_dom_messages.py` with `append=True` to combine and deduplicate messages automatically
-   4. I repeat until the target date range is covered
-   5. I pipe the final combined messages to `src/main.py` for processing
+   **Important:** The extraction process works incrementally as follows:
+   1.  I simulate scrolling backward using `chrome-devtools_press_key`.
+   2.  I extract messages using `chrome-devtools_evaluate_script` with the robust JavaScript logic from `src/browser_scraper.py`.
+   3.  I internally combine and deduplicate messages by timestamp.
+   4.  I repeat this process until the target date range is covered or no new unique messages are found.
+   5.  I pipe the final combined messages to `src/main.py` for further processing and optional upload to Google Drive.
    
-   See `DOM_EXTRACTION_GUIDE.md` for detailed technical information about how this works.
+   See `DOM_EXTRACTION_GUIDE.md` for detailed technical information about how this process works.
    
    **Option B: Manual extraction (Advanced)**
    
-   The `scripts/extract_dom_messages.py` script exists but **cannot be used directly in Cursor** because MCP tools cannot be passed as callable functions. Instead, use MCP tools directly:
+   For advanced users, you can manually control the browser extraction process using the `chrome-devtools` MCP tools directly:
    
-   - Use `mcp_chrome-devtools_press_key` to scroll
-   - Use `mcp_chrome-devtools_evaluate_script` with JavaScript from `src/browser_scraper.py`
-   - Use `scripts/extract_dom_messages.py` with `append=True` to combine messages incrementally
+   -   Use `mcp_chrome-devtools_press_key(key="PageUp")` to scroll up and load older messages.
+   -   Use `mcp_chrome-devtools_evaluate_script(function=extract_messages_from_dom_script())` to extract messages from the current DOM.
+   -   Use `mcp_chrome-devtools_evaluate_script(function=extract_date_separators_script())` to identify date separators.
+   -   You will need to manually manage message deduplication and combination.
    
-   See `DOM_EXTRACTION_GUIDE.md` for the complete manual workflow.
+   **Note:** Slack uses virtual scrolling/lazy loading, so messages must be scrolled into view before they are rendered in the DOM. Always scroll backward using PageUp keys to load older messages when performing manual extraction.
    
-   **Note:** Slack uses virtual scrolling/lazy loading, so messages must be scrolled into view before they're rendered in the DOM. Scroll backward using PageUp keys to load older messages.
+   The `scripts/extract_dom_messages.py` script is **not** designed for direct execution within the Cursor Agent environment as it expects callable MCP tools. Instead, the agent (me) performs the direct browser interaction as described in Option A. This script is primarily for reference or external execution environments.
 
 3. **Process and upload to Google Drive**:
    ```bash

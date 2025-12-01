@@ -1074,6 +1074,62 @@ class GoogleDriveClient:
             logger.warning(f"Error saving export metadata: {e}", exc_info=True)
             return False
 
+    def rename_file(self, file_id: str, new_name: str) -> bool:
+        """Rename a file in Google Drive.
+
+        Args:
+            file_id: Google Drive file ID
+            new_name: New name for the file
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not file_id:
+            logger.error("File ID cannot be empty")
+            return False
+        if not new_name:
+            logger.error("New file name cannot be empty")
+            return False
+
+        try:
+            self._rate_limit()
+            self.service.files().update(
+                fileId=file_id,
+                body={"name": new_name},
+                fields="id, name"
+            ).execute()
+            logger.info(f"Renamed file {file_id} to '{new_name}'")
+            return True
+        except HttpError as error:
+            logger.error(f"Error renaming file {file_id}: {error}")
+            return False
+
+    def trash_file(self, file_id: str) -> bool:
+        """Move a file to trash in Google Drive.
+
+        Args:
+            file_id: Google Drive file ID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not file_id:
+            logger.error("File ID cannot be empty")
+            return False
+
+        try:
+            self._rate_limit()
+            self.service.files().update(
+                fileId=file_id,
+                body={"trashed": True},
+                fields="id"
+            ).execute()
+            logger.info(f"Moved file {file_id} to trash")
+            return True
+        except HttpError as error:
+            logger.error(f"Error moving file {file_id} to trash: {error}")
+            return False
+
     def get_folder_permissions(self, folder_id: str) -> list:
         """Gets the list of permissions for a folder.
 

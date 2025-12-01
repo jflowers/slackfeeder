@@ -23,7 +23,9 @@ logger = setup_logging()
 
 # Constants
 SCROLL_DELAY_SECONDS = 1.0  # Delay between scroll actions
-NETWORK_REQUEST_WAIT_SECONDS = 3.0  # Wait time for network requests after scrolling (increased from 2.0)
+NETWORK_REQUEST_WAIT_SECONDS = (
+    3.0  # Wait time for network requests after scrolling (increased from 2.0)
+)
 CONVERSATIONS_HISTORY_ENDPOINT = "conversations.history"
 MAX_SCROLL_ATTEMPTS = 100  # Maximum number of scroll attempts before stopping
 
@@ -108,7 +110,9 @@ class BrowserScraper:
         logger.info(f"Captured {len(captured_responses)} API responses")
         return captured_responses
 
-    def save_captured_response(self, response_data: Dict[str, Any], output_dir: Path, index: int) -> Path:
+    def save_captured_response(
+        self, response_data: Dict[str, Any], output_dir: Path, index: int
+    ) -> Path:
         """Save a captured API response to a JSON file.
 
         Args:
@@ -149,12 +153,12 @@ class BrowserScraper:
             """Extract number from filename like 'response_42.json' -> 42"""
             try:
                 name = path.stem  # 'response_42'
-                number_str = name.split('_', 1)[1] if '_' in name else '0'
+                number_str = name.split("_", 1)[1] if "_" in name else "0"
                 return int(number_str)
             except (ValueError, IndexError):
                 # Fallback to file modification time if filename parsing fails
                 return int(path.stat().st_mtime)
-        
+
         response_files = sorted(response_dir.glob("response_*.json"), key=extract_number)
         logger.info(f"Loading {len(response_files)} captured response files")
 
@@ -236,67 +240,103 @@ def extract_messages_from_dom_script() -> str:
     """
     return """
     () => {
-        const links = document.querySelectorAll('a[href*="/archives/"]');
+        const items = document.querySelectorAll('div[data-qa="virtual-list-item"]');
         const messages = [];
-        const seen = new Set();
+        let lastUser = "unknown";
         
-        for (const link of Array.from(links)) {
-            const href = link.href;
-            const pIndex = href.lastIndexOf('/p');
-            if (pIndex === -1) continue;
-            const tsStr = href.substring(pIndex + 2);
-            if (tsStr.length < 10) continue;
+        items.forEach(item => {
+            const key = item.dataset.itemKey;
+            if (!key) return;
+
+            // Skip date separators (marked by non-float key or roledescription)
+            if (item.getAttribute('roledescription') === 'separator' || !key.match(/^\\d+\\.\\d+$/)) {
+                return;
+            }
+
+            // Message Check (Float Timestamp)
+            // Timestamp is directly in the key
+            const ts = key;
             
-            const ts = tsStr.substring(0, 10) + '.' + tsStr.substring(10);
-            if (seen.has(ts)) continue;
-            seen.add(ts);
+            // Text Content
+            // Prefer dedicated message-text element, fallback to message content, then item text
+            const textEl = item.querySelector('[data-qa="message-text"]');
+            let text = "";
+            if (textEl) {
+                // Get text from rich text blocks if available
+                const richText = textEl.querySelector('.c-message__message_blocks--rich_text');
+                text = richText ? richText.innerText : textEl.innerText;
+            } else {
+                const contentEl = item.querySelector('[data-qa="message_content"]');
+                text = contentEl ? contentEl.innerText : item.innerText;
+            }
+            text = text.trim();
+
+            // User Name
+            // Try to find the sender button
+            // Note: Consecutive messages often omit the sender button (grouping)
+            // We use the last seen user in that case
+            // The sender button usually has a specific class or is the first button in the gutter
+            let user = null;
             
-            const container = link.closest('div[role="presentation"], div');
-            if (!container) continue;
-            
-            let userName = null;
-            const buttons = container.querySelectorAll('button');
-            for (const btn of buttons) {
-                const txt = btn.textContent.trim();
-                if (txt && txt.length > 1 && txt !== 'React' && txt !== 'Reply' && 
-                    txt !== 'More' && txt !== 'Add' && txt.indexOf(':') < 0 &&
-                    !txt.match(/^\\d{1,2}:\\d{2}/)) {
-                    userName = txt;
-                    break;
+            // Strategy 1: Look for button in the left gutter or specific sender container
+            // (Slack structure varies, but usually sender is a button in c-message_kit__sender or similar)
+            const senderBtn = item.querySelector('button[data-message-sender], .c-message_kit__sender button');
+            if (senderBtn) {
+                user = senderBtn.innerText;
+            } else {
+                // Strategy 2: Look for *any* button that isn't an action button
+                // (like reactions, reply, etc.) - heuristic approach
+                const buttons = item.querySelectorAll('button');
+                for (const btn of buttons) {
+                    const txt = btn.innerText.trim();
+                    // Filter out common UI buttons
+                    if (txt && txt.length > 1 && 
+                        !['React', 'Reply', 'More actions', 'Add reaction', 'Share'].some(s => txt.includes(s)) && 
+                        !txt.match(/^\\d{1,2}:\\d{2}/) && // Time
+                        !txt.match(/^\\d+ reply/) // Thread reply count
+                    ) {
+                        // High probability this is the user name if it appears before the message text
+                        // Check if it is "above" the text visually or in DOM order
+                        user = txt;
+                        break;
+                    }
                 }
             }
-            
-            let text = container.textContent.trim();
-            
-            if (userName) {
-                const nameIndex = text.indexOf(userName);
-                if (nameIndex !== -1) {
-                    text = text.substring(nameIndex + userName.length).trim();
-                }
+
+            if (user) {
+                lastUser = user;
+            } else {
+                // Grouped message, use last known user
+                user = lastUser;
             }
-            
-            const timePatterns = [/^\\d{1,2}:\\d{2}\\s+AM/, /^\\d{1,2}:\\d{2}\\s+PM/, /^\\d{1,2}:\\d{2}/];
-            for (const pattern of timePatterns) {
-                const match = text.match(pattern);
-                if (match) {
-                    text = text.substring(match[0].length).trim();
-                    break;
+
+            // File attachments check
+            const files = [];
+            const fileLinks = item.querySelectorAll('a[href*="files.slack.com"]');
+            fileLinks.forEach(link => {
+                const img = link.querySelector('img');
+                if (img) {
+                    files.push({
+                        url: link.href,
+                        name: link.getAttribute('download') || link.href.split('/').pop(),
+                        thumb_url: img.src
+                    });
                 }
-            }
+            });
             
-            text = text.replace(/React.*/g, '').replace(/Reply.*/g, '').replace(/More.*/g, '');
-            text = text.replace(/Add reaction.*/g, '').replace(/\\s+/g, ' ').trim();
-            
-            if (text.length > 0) {
+            // If we have text or files, add the message
+            if (text.length > 0 || files.length > 0) {
                 messages.push({
                     ts: ts,
-                    user: userName || 'unknown',
+                    user: user || 'unknown',
                     text: text,
+                    files: files,
                     type: 'message'
                 });
             }
-        }
+        });
         
+        // Sort by timestamp just in case DOM order wasn't perfect (though it usually is)
         messages.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
         
         return {
@@ -310,6 +350,107 @@ def extract_messages_from_dom_script() -> str:
     """
 
 
+def extract_date_separators_script() -> str:
+    """Return JavaScript code to extract date separators from Slack DOM.
+
+    Returns:
+        JavaScript function as string that extracts date separators from the page
+    """
+    return """
+    () => {
+        const items = document.querySelectorAll('div[data-qa="virtual-list-item"]');
+        const dateSeparators = [];
+        const seen = new Set();
+        
+        items.forEach(item => {
+            // Strictly check for separator role to avoid sidebar items
+            // Note: attribute is aria-roledescription, not roledescription
+            const role = item.getAttribute('aria-roledescription');
+            
+            if (role === 'separator') {
+                const text = item.innerText.trim();
+                // Extract date part (remove "Press enter..." suffix if present)
+                // "Wednesday, August 6th Press enter to select a date to jump to."
+                let dateText = text.split('\\n')[0].replace(/Press enter.*/, '').trim();
+                
+                // If it looks like a date, add it
+                if (dateText.length > 5) {
+                     if (!seen.has(dateText)) {
+                        seen.add(dateText);
+                        
+                        // Try to infer timestamp from the next message
+                        let timestamp = null;
+                        let sibling = item.nextElementSibling;
+                        let attempts = 0;
+                        while(sibling && attempts < 5) {
+                            if (sibling.dataset && sibling.dataset.itemKey && sibling.dataset.itemKey.match(/^\\d+\\.\\d+$/)) {
+                                timestamp = sibling.dataset.itemKey;
+                                break;
+                            }
+                            sibling = sibling.nextElementSibling;
+                            attempts++;
+                        }
+                        
+                        dateSeparators.push({
+                            text: dateText,
+                            timestamp: timestamp,
+                            fullText: text
+                        });
+                    }
+                }
+            }
+        });
+        
+        return {
+            ok: true,
+            separators: dateSeparators,
+            separator_count: dateSeparators.length,
+            visible_dates: dateSeparators.map(s => s.text)
+        };
+    }
+    """
+
+
+def extract_date_separators_from_dom(mcp_evaluate_script) -> Dict[str, Any]:
+    """Extract date separators from Slack DOM using JavaScript.
+
+    Args:
+        mcp_evaluate_script: Function to evaluate JavaScript in the browser
+                           (e.g., mcp_chrome-devtools_evaluate_script)
+
+    Returns:
+        Dictionary with extracted date separators
+    """
+    logger.debug("Extracting date separators from DOM...")
+
+    script = extract_date_separators_script()
+
+    try:
+        result = mcp_evaluate_script(function=script)
+
+        if not result:
+            logger.debug("Date separator extraction returned no result")
+            return {"ok": False, "separators": [], "separator_count": 0, "visible_dates": []}
+
+        # Handle different response formats
+        if isinstance(result, dict):
+            if "separators" in result:
+                # Already in correct format
+                separator_count = len(result.get("separators", []))
+                logger.debug(f"Extracted {separator_count} date separators from DOM")
+                return result
+            elif "result" in result:
+                # Nested result
+                return result["result"]
+
+        logger.warning(f"Unexpected date separator extraction result format: {type(result)}")
+        return {"ok": False, "separators": [], "separator_count": 0, "visible_dates": []}
+
+    except Exception as e:
+        logger.warning(f"Failed to extract date separators from DOM: {e}", exc_info=True)
+        return {"ok": False, "separators": [], "separator_count": 0, "visible_dates": []}
+
+
 def extract_messages_from_dom(mcp_evaluate_script) -> Dict[str, Any]:
     """Extract messages from Slack DOM using JavaScript.
 
@@ -321,16 +462,16 @@ def extract_messages_from_dom(mcp_evaluate_script) -> Dict[str, Any]:
         Dictionary in API response format with extracted messages
     """
     logger.info("Extracting messages from DOM...")
-    
+
     script = extract_messages_from_dom_script()
-    
+
     try:
         result = mcp_evaluate_script(function=script)
-        
+
         if not result:
             logger.warning("DOM extraction returned no result")
             return {"ok": False, "messages": [], "message_count": 0}
-        
+
         # Handle different response formats
         if isinstance(result, dict):
             if "messages" in result:
@@ -341,10 +482,10 @@ def extract_messages_from_dom(mcp_evaluate_script) -> Dict[str, Any]:
             elif "result" in result:
                 # Nested result
                 return result["result"]
-        
+
         logger.warning(f"Unexpected DOM extraction result format: {type(result)}")
         return {"ok": False, "messages": [], "message_count": 0}
-        
+
     except Exception as e:
         logger.error(f"Failed to extract messages from DOM: {e}", exc_info=True)
         return {"ok": False, "messages": [], "message_count": 0}
