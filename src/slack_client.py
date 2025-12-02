@@ -392,3 +392,99 @@ class SlackClient:
 
         all_messages.sort(key=lambda x: float(x.get("ts", 0)))
         return all_messages
+
+    def fetch_thread_history(self, channel_id: str, thread_ts: str) -> Optional[List[Dict]]:
+        """Fetches the complete message history for a specific thread.
+
+        Args:
+            channel_id: Slack channel ID
+            thread_ts: Timestamp of the parent message (thread ID)
+
+        Returns:
+            List of message objects (parent + replies) sorted by timestamp, or None on error
+        """
+        all_thread_messages = []
+        next_cursor = None
+        page_count = 0
+        retry_count = 0
+
+        logger.debug(f"Starting thread export for thread {thread_ts} in channel {channel_id}")
+
+        try:
+            while True:
+                page_count += 1
+                try:
+                    response = self.client.conversations_replies(
+                        channel=channel_id,
+                        ts=thread_ts,
+                        limit=DEFAULT_PAGE_SIZE,
+                        cursor=next_cursor,
+                    )
+                    retry_count = 0  # Reset retry count on success
+
+                except SlackApiError as e:
+                    error_code = e.response.get("error", "unknown")
+                    http_status = getattr(e.response, "status_code", None)
+                    logger.error(
+                        f"Slack API Error for thread {thread_ts} (Page {page_count}): {error_code} (HTTP {http_status})"
+                    )
+
+                    # Handle rate limiting
+                    if error_code == "ratelimited" and retry_count < MAX_RETRIES:
+                        retry_count += 1
+                        try:
+                            retry_after = int(
+                                e.response.headers.get(
+                                    "Retry-After", BASE_RETRY_DELAY * (2**retry_count)
+                                )
+                            )
+                            retry_after = min(retry_after, MAX_RETRY_DELAY_SECONDS)
+                        except (ValueError, TypeError):
+                            retry_after = BASE_RETRY_DELAY * (2**retry_count)
+                        logger.warning(
+                            f"Rate limited (thread {thread_ts}). Retrying after {retry_after}s..."
+                        )
+                        time.sleep(retry_after)
+                        page_count -= 1
+                        continue
+                    elif http_status and http_status >= 500 and retry_count < MAX_RETRIES:
+                        retry_count += 1
+                        retry_after = min(BASE_RETRY_DELAY * (2**retry_count), MAX_RETRY_DELAY_SECONDS)
+                        logger.warning(
+                            f"Transient error {http_status} (thread {thread_ts}). Retrying after {retry_after}s..."
+                        )
+                        time.sleep(retry_after)
+                        page_count -= 1
+                        continue
+                    else:
+                        logger.error(f"Stopping thread export for {thread_ts} due to error: {error_code}")
+                        return None
+                except Exception as e:
+                    logger.error(f"Unexpected error fetching thread {thread_ts}: {e}", exc_info=True)
+                    return None
+
+                try:
+                    messages = response.get("messages", [])
+                    all_thread_messages.extend(messages)
+                    
+                    response_metadata = response.get("response_metadata")
+                    if response_metadata:
+                        next_cursor = response_metadata.get("next_cursor")
+                    else:
+                        next_cursor = None
+                except (KeyError, AttributeError) as e:
+                    logger.error(f"Unexpected response format for thread {thread_ts}: {e}")
+                    return None
+
+                if not next_cursor:
+                    break
+
+                time.sleep(DEFAULT_RATE_LIMIT_DELAY)
+
+        except Exception as e:
+            logger.error(f"Error in pagination loop for thread {thread_ts}: {e}", exc_info=True)
+            return None
+
+        # Sort messages
+        all_thread_messages.sort(key=lambda x: float(x.get("ts", 0)))
+        return all_thread_messages

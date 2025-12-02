@@ -2313,6 +2313,44 @@ def main(args: argparse.Namespace) -> None:
                 stats["failed"] += 1
                 continue
 
+            # --- Orphan Thread Detection & Fetching ---
+            # Identify replies whose root messages are missing from the current history batch
+            # (i.e., threads that started before the export window but have activity now)
+            if history:
+                messages_by_ts = {msg.get("ts"): msg for msg in history if msg.get("ts")}
+                orphan_threads = set()
+
+                for msg in history:
+                    thread_ts = msg.get("thread_ts")
+                    ts = msg.get("ts")
+                    
+                    # Check if it's a reply (has thread_ts and it differs from its own ts)
+                    if thread_ts and ts != thread_ts:
+                        # If the parent thread_ts is NOT in our current message set, it's an orphan reply
+                        if thread_ts not in messages_by_ts:
+                            orphan_threads.add(thread_ts)
+
+                if orphan_threads:
+                    logger.info(f"Found {len(orphan_threads)} active threads starting before export window. Fetching full context...")
+                    
+                    for thread_ts in orphan_threads:
+                        logger.info(f"Fetching full history for active thread {thread_ts}...")
+                        thread_messages = slack_client.fetch_thread_history(channel_id, thread_ts)
+                        
+                        if thread_messages:
+                            # Add messages to history, avoiding duplicates
+                            for t_msg in thread_messages:
+                                t_ts = t_msg.get("ts")
+                                if t_ts and t_ts not in messages_by_ts:
+                                    history.append(t_msg)
+                                    messages_by_ts[t_ts] = t_msg # Update lookup
+                        else:
+                            logger.warning(f"Failed to fetch thread {thread_ts}")
+
+                    # Re-sort history after adding thread messages
+                    history.sort(key=lambda x: float(x.get("ts", 0)))
+                    logger.info(f"Export history expanded to {len(history)} messages after active thread retrieval")
+
             if len(history) == 0:
                 logger.info(
                     f"No messages found for {channel_name} ({channel_id}) in specified date range"
