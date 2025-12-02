@@ -235,15 +235,22 @@ def find_conversations_history_requests(
 def extract_messages_from_dom_script() -> str:
     """Return JavaScript code to extract messages from Slack DOM.
 
+    Accepts an optional containerSelector to scope message extraction to a specific element.
+
     Returns:
         JavaScript function as string that extracts messages from the page
     """
     return """
-    () => {
-        const items = document.querySelectorAll('div[data-qa="virtual-list-item"]');
+    (containerSelector) => {
+        const container = containerSelector ? document.querySelector(containerSelector) : document;
+        if (!container) {
+            return { ok: false, messages: [], message_count: 0, oldest: null, latest: null };
+        }
+
+        const items = container.querySelectorAll('div[data-qa="virtual-list-item"]');
         const messages = [];
         let lastUser = "unknown";
-        
+
         items.forEach(item => {
             const key = item.dataset.itemKey;
             if (!key) return;
@@ -256,7 +263,7 @@ def extract_messages_from_dom_script() -> str:
             // Message Check (Float Timestamp)
             // Timestamp is directly in the key
             const ts = key;
-            
+
             // Text Content
             // Prefer dedicated message-text element, fallback to message content, then item text
             const textEl = item.querySelector('[data-qa="message-text"]');
@@ -277,7 +284,7 @@ def extract_messages_from_dom_script() -> str:
             // We use the last seen user in that case
             // The sender button usually has a specific class or is the first button in the gutter
             let user = null;
-            
+
             // Strategy 1: Look for button in the left gutter or specific sender container
             // (Slack structure varies, but usually sender is a button in c-message_kit__sender or similar)
             const senderBtn = item.querySelector('button[data-message-sender], .c-message_kit__sender button');
@@ -290,8 +297,8 @@ def extract_messages_from_dom_script() -> str:
                 for (const btn of buttons) {
                     const txt = btn.innerText.trim();
                     // Filter out common UI buttons
-                    if (txt && txt.length > 1 && 
-                        !['React', 'Reply', 'More actions', 'Add reaction', 'Share'].some(s => txt.includes(s)) && 
+                    if (txt && txt.length > 1 &&
+                        !['React', 'Reply', 'More actions', 'Add reaction', 'Share'].some(s => txt.includes(s)) &&
                         !txt.match(/^\\d{1,2}:\\d{2}/) && // Time
                         !txt.match(/^\\d+ reply/) // Thread reply count
                     ) {
@@ -323,7 +330,7 @@ def extract_messages_from_dom_script() -> str:
                     });
                 }
             });
-            
+
             // If we have text or files, add the message
             if (text.length > 0 || files.length > 0) {
                 messages.push({
@@ -335,10 +342,10 @@ def extract_messages_from_dom_script() -> str:
                 });
             }
         });
-        
+
         // Sort by timestamp just in case DOM order wasn't perfect (though it usually is)
         messages.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
-        
+
         return {
             ok: true,
             messages: messages,
@@ -348,7 +355,6 @@ def extract_messages_from_dom_script() -> str:
         };
     }
     """
-
 
 def extract_date_separators_script() -> str:
     """Return JavaScript code to extract date separators from Slack DOM.
@@ -451,36 +457,39 @@ def extract_date_separators_from_dom(mcp_evaluate_script) -> Dict[str, Any]:
         return {"ok": False, "separators": [], "separator_count": 0, "visible_dates": []}
 
 
-def extract_messages_from_dom(mcp_evaluate_script) -> Dict[str, Any]:
+def extract_messages_from_dom(mcp_evaluate_script, container_selector: Optional[str] = None) -> Dict[str, Any]:
     """Extract messages from Slack DOM using JavaScript.
 
     Args:
         mcp_evaluate_script: Function to evaluate JavaScript in the browser
-                           (e.g., mcp_chrome-devtools_evaluate_script)
+        container_selector: Optional CSS selector string to scope the extraction (e.g., '.thread-sidebar')
 
     Returns:
         Dictionary in API response format with extracted messages
     """
-    logger.info("Extracting messages from DOM...")
+    logger.info(f"Extracting messages from DOM (selector: {container_selector or 'document'})...")
 
     script = extract_messages_from_dom_script()
 
     try:
-        result = mcp_evaluate_script(function=script)
+        # Pass containerSelector as an argument to the JS function
+        result = mcp_evaluate_script(function=script, args=[{"containerSelector": container_selector}])
 
         if not result:
             logger.warning("DOM extraction returned no result")
             return {"ok": False, "messages": [], "message_count": 0}
 
-        # Handle different response formats
+        # Handle different response formats (MCP often nests the actual result)
         if isinstance(result, dict):
             if "messages" in result:
                 # Already in correct format
                 message_count = len(result.get("messages", []))
                 logger.info(f"Extracted {message_count} messages from DOM")
                 return result
-            elif "result" in result:
+            elif "result" in result and "messages" in result["result"]:
                 # Nested result
+                message_count = len(result["result"].get("messages", []))
+                logger.info(f"Extracted {message_count} messages from nested DOM result")
                 return result["result"]
 
         logger.warning(f"Unexpected DOM extraction result format: {type(result)}")

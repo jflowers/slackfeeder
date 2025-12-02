@@ -2768,6 +2768,11 @@ if __name__ == "__main__":
         action="store_false",
         help="Disable automatic conversation selection from sidebar. Use this if you've already navigated to the conversation manually.",
     )
+    parser.add_argument(
+        "--extract-active-threads",
+        action="store_true",
+        help="[Browser Export Only] Extract full history of threads with recent activity (today/yesterday). Requires --browser-export-dm.",
+    )
     # Set default to True after adding both arguments
     parser.set_defaults(select_conversation=True)
 
@@ -2825,8 +2830,8 @@ if __name__ == "__main__":
         # This uses the same code path as --export-history but extracts messages directly from DOM
         from pathlib import Path
         from datetime import datetime, timezone
-        from src.browser_response_processor import BrowserResponseProcessor
         from src.browser_scraper import extract_messages_from_dom
+        from scripts.extract_active_threads import extract_active_threads_for_daily_export
 
         # Require browser-export.json config file
         if not args.browser_export_config:
@@ -2920,10 +2925,10 @@ if __name__ == "__main__":
         # Initialize processor for conversation filtering only
         processor = BrowserResponseProcessor()
         
-        # Extract messages from DOM
+        # Extract messages from DOM (main conversation history)
         # Messages must be provided via stdin (JSON format) - no intermediate files
         # Browser exports use the same code path as --export-history
-        all_messages = []
+        main_conversation_messages = []
         import json
         
         # Read messages from stdin (required - no file fallback)
@@ -2955,8 +2960,8 @@ if __name__ == "__main__":
                 sys.exit(1)
             
             response_data = json.loads(stdin_data)
-            all_messages = response_data.get("messages", [])
-            logger.info(f"Loaded {len(all_messages)} messages from stdin")
+            main_conversation_messages = response_data.get("messages", [])
+            logger.info(f"Loaded {len(main_conversation_messages)} messages from stdin")
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON from stdin: {e}")
             sys.exit(1)
@@ -2964,16 +2969,51 @@ if __name__ == "__main__":
             logger.error(f"Failed to read from stdin: {e}", exc_info=True)
             sys.exit(1)
         
-        if not all_messages:
-            logger.error("No messages found in input")
+        if not main_conversation_messages and not args.extract_active_threads:
+            logger.error("No messages found in input and --extract-active-threads is not enabled.")
             sys.exit(1)
 
         # Filter messages by conversation participants (browser exports may contain multiple conversations)
-        all_messages = processor._filter_by_conversation_participants(all_messages, conversation_name)
+        if main_conversation_messages:
+            main_conversation_messages = processor._filter_by_conversation_participants(main_conversation_messages, conversation_name)
+            if not main_conversation_messages:
+                logger.warning("No messages found after filtering main conversation by participants.")
+        
+        # --- Handle Active Thread Extraction ---
+        active_thread_messages = []
+        if args.extract_active_threads:
+            if args.upload_to_drive: # Only attempt if uploading to Drive
+                logger.info("Attempting to extract active threads from browser.")
+                try:
+                    # mcp_chrome-devtools_evaluate_script, mcp_chrome-devtools_click, mcp_chrome-devtools_press_key
+                    # These are available globally when running from Cursor/MCP.
+                    active_thread_messages = extract_active_threads_for_daily_export(
+                        mcp_evaluate_script=default_api.evaluate_script, # Changed from mcp_chrome-devtools_evaluate_script
+                        mcp_click=default_api.click,                     # Changed from mcp_chrome-devtools_click
+                        mcp_press_key=default_api.press_key,             # Changed from mcp_chrome-devtools_press_key
+                        target_conversation_name=conversation_name,
+                        export_date=datetime.now(timezone.utc), # Export for today and yesterday
+                    )
+                    logger.info(f"Collected {len(active_thread_messages)} messages from active threads.")
+                except Exception as e:
+                    logger.error(f"Failed to extract active threads: {e}", exc_info=True)
+            else:
+                logger.warning("--extract-active-threads is only supported with --upload-to-drive. Skipping thread extraction.")
+        
+        # Combine and deduplicate all messages from main conversation and active threads
+        all_messages_map = {msg.get("ts"): msg for msg in main_conversation_messages if msg.get("ts")}
+        for msg in active_thread_messages:
+            ts = msg.get("ts")
+            if ts and ts not in all_messages_map:
+                all_messages_map[ts] = msg
+        all_messages = list(all_messages_map.values())
+        
+        # Sort combined messages chronologically
+        all_messages.sort(key=lambda m: float(m.get("ts", 0)))
+        
         if not all_messages:
-            logger.warning("No messages found after filtering by conversation participants")
+            logger.warning("No messages found from main conversation or active threads.")
             sys.exit(1)
-        logger.info(f"Filtered to {len(all_messages)} messages from conversation participants")
 
         # Determine oldest timestamp for incremental fetching
         # Initialize Google Drive client early if uploading to Drive (needed for incremental export check)
@@ -3106,8 +3146,8 @@ if __name__ == "__main__":
                 conversation_id=args.browser_conversation_id,
                 google_drive_client=google_drive_client,
                 google_drive_folder_id=google_drive_folder_id,
-                slack_client=None,
-                people_cache=None,
+                slack_client=None, # Not used for browser exports
+                people_cache=None, # Not used for browser exports
                 use_display_names=True,
             )
 

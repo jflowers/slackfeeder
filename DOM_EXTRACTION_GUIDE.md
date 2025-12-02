@@ -4,20 +4,28 @@ This guide explains how an AI assistant with MCP browser connectivity (e.g., `ch
 
 ## 1. Overview
 
-The goal is to extract message history from a Slack channel or DM without using the Slack API (which requires an app token). Instead, we automate a browser session to scroll through the history and "scrape" the data directly from the DOM.
+The goal is to extract message history from a Slack channel or DM without using the Slack API (which requires an app token). Instead, we automate a browser session to scroll through the history and "scrape" the data directly from the DOM. This includes a specialized process for capturing entire multi-day threads that have recent activity (today or yesterday).
 
 **Prerequisites:**
 *   Active browser session logged into Slack.
 *   MCP server for Chrome DevTools connected.
-*   The conversation to be exported is currently open in the active tab.
+*   The conversation to be exported is currently open in the active tab (for main feed).
 
 ## 2. Core Strategy
 
-The extraction process involves:
-1.  **Selection:** Identifying the correct container elements for messages.
-2.  **Extraction:** Parsing timestamps, user names, and message content from those elements.
-3.  **Navigation:** Scrolling up to load older messages.
-4.  **Deduplication:** Handling the virtual list behavior (where items are reused/unmounted) by tracking unique message IDs.
+The extraction process involves two main phases:
+
+1.  **Main Conversation History:**
+    *   **Selection:** Identifying the correct container elements for messages.
+    *   **Extraction:** Parsing timestamps, user names, and message content from those elements.
+    *   **Navigation:** Scrolling up to load older messages.
+    *   **Deduplication:** Handling the virtual list behavior (where items are reused/unmounted) by tracking unique message IDs.
+
+2.  **Multi-Day Thread History (Supplemental):**
+    *   **Discovery:** Navigating to the global "Threads" view to identify threads with recent activity.
+    *   **Expansion:** Iteratively clicking "Show N more replies" within thread sidebars to load full thread history.
+    *   **Scoped Extraction:** Extracting all messages (root + replies) from the expanded thread sidebar.
+    *   **Integration:** Merging these full thread contexts with the main conversation history.
 
 ## 3. DOM Structure & Selectors (Robust Method)
 
@@ -123,12 +131,80 @@ Execute a JavaScript function via `evaluate_script` that returns a JSON object c
 ### Step 3: Pagination (Scrolling)
 The virtual list unmounts items as they scroll out of view. You cannot "scroll to bottom and capture all".
 
-**Algorithm:**
-1.  Extract currently visible messages.
-2.  Store them (deduplicating by `ts`).
-3.  Scroll up (simulate `PageUp` key press or use JS `scrollBy`).
-4.  Wait for network requests (`conversations.history`) to complete and DOM to update.
-5.  Repeat until the "oldest" message timestamp stops changing or a limit is reached.
+**Algorithm: Overlap Verification (Chain of Custody)**
+This algorithm ensures a complete, gap-free message history is collected by verifying each newly loaded chunk of messages connects to the previously collected messages.
+
+1.  **Initial Extraction:** Perform an initial extraction of messages visible in the current viewport.
+2.  **Establish Frontier:** Identify the `timestamp` of the *oldest* message retrieved in the initial extraction. This `timestamp` becomes the 'frontier' – the point we aim to scroll past.
+3.  **Scroll Up:** Simulate `PageUp` key presses to load older messages. Wait for the DOM to update after scrolling.
+4.  **Extract Current View:** Extract all messages currently visible in the DOM.
+5.  **Verify Overlap (Gap Detection):**
+    *   Find the message with the *newest* `timestamp` in the `current view`.
+    *   Compare this `newest_timestamp_in_view` with the `frontier_timestamp`.
+    *   **If `newest_timestamp_in_view` is significantly older than `frontier_timestamp`:** A gap is detected. This means we scrolled too far up, and some messages between the `frontier` and the `current view` might have been missed.
+6.  **Corrective Scrolling (Gap Bridging):**
+    *   If a gap is detected, perform small `ArrowDown` scrolls (or equivalent granular scrolling) and re-extract the view.
+    *   Repeat this until an overlap is re-established (i.e., `newest_timestamp_in_view` is no longer significantly older than `frontier_timestamp`). This ensures we find the exact connecting point.
+7.  **Collect New Messages:** Add all unique messages from the `current view` that are older than the `frontier_timestamp` to the overall collection.
+8.  **Update Frontier:** Set the `timestamp` of the *oldest* message in the `current view` as the new `frontier_timestamp`.
+9.  **Repeat:** Continue steps 3-8 until the `frontier_timestamp` is older than the `start_date` specified by the user, or no new unique messages are found after multiple scroll attempts (indicating the beginning of the conversation has been reached).
+
+### Step 3: Pagination (Scrolling)
+The virtual list unmounts items as they scroll out of view. You cannot "scroll to bottom and capture all".
+
+**Algorithm: Overlap Verification (Chain of Custody)**
+This algorithm ensures a complete, gap-free message history is collected by verifying each newly loaded chunk of messages connects to the previously collected messages.
+
+1.  **Initial Extraction:** Perform an initial extraction of messages visible in the current viewport.
+2.  **Establish Frontier:** Identify the `timestamp` of the *oldest* message retrieved in the initial extraction. This `timestamp` becomes the 'frontier' – the point we aim to scroll past.
+3.  **Scroll Up:** Simulate `PageUp` key presses to load older messages. Wait for the DOM to update after scrolling.
+4.  **Extract Current View:** Extract all messages currently visible in the DOM.
+5.  **Verify Overlap (Gap Detection):**
+    *   Find the message with the *newest* `timestamp` in the `current view`.
+    *   Compare this `newest_timestamp_in_view` with the `frontier_timestamp`.
+    *   **If `newest_timestamp_in_view` is significantly older than `frontier_timestamp`:** A gap is detected. This means we scrolled too far up, and some messages between the `frontier` and the `current view` might have been missed.
+6.  **Corrective Scrolling (Gap Bridging):**
+    *   If a gap is detected, perform small `ArrowDown` scrolls (or equivalent granular scrolling) and re-extract the view.
+    *   Repeat this until an overlap is re-established (i.e., `newest_timestamp_in_view` is no longer significantly older than `frontier_timestamp`). This ensures we find the exact connecting point.
+7.  **Collect New Messages:** Add all unique messages from the `current view` that are older than the `frontier_timestamp` to the overall collection.
+8.  **Update Frontier:** Set the `timestamp` of the *oldest* message in the `current view` as the new `frontier_timestamp`.
+9.  **Repeat:** Continue steps 3-8 until the `frontier_timestamp` is older than the `start_date` specified by the user, or no new unique messages are found after multiple scroll attempts (indicating the beginning of the conversation has been reached).
+
+### 4.1. Multi-Day Thread Extraction Protocol
+
+To capture complete multi-day threads (root message + all replies) that have activity on the export day (today or yesterday), use the following protocol:
+
+1.  **Navigate to "Threads" View:**
+    *   Click the "Threads" sidebar item (e.g., `uid=26_19`).
+    *   Wait for the page to load.
+
+2.  **Scan and Filter Thread Summaries:**
+    *   Iterate through the visible thread summary cards in the main panel (`div[role="listitem"]`).
+    *   For each card, extract:
+        *   **Last Reply Timestamp:** Parse from the card's text content (e.g., "Yesterday at 1:44 PM"). This is crucial for filtering.
+        *   **Channel/DM Name:** Extract the conversation identifier from the card's text.
+        *   **Clickable Element UID:** Identify the `uid` of the button or link within the card that opens the full thread.
+    *   **Filter:** Only consider threads where:
+        *   The `Last Reply Timestamp` is from the target export day (today or yesterday).
+        *   The `Channel/DM Name` matches the target conversation for the export.
+
+3.  **Expand and Extract Full Thread:**
+    *   For each filtered thread summary:
+        *   **Click Thread Card:** Click the `clickable element UID` to open the thread in the right-hand sidebar (DOM: `div[role="dialog"][aria-label^="Thread"]`).
+        *   **Initial Extraction:** Extract all currently visible messages from the opened thread sidebar using the `extract_messages_from_dom` function, scoping it to the sidebar's DOM selector (`THREAD_SIDEPANEL_SELECTOR`).
+        *   **Iterative Reply Loading:**
+            *   Look for a "Show N more replies" button within the thread sidebar (e.g., `button[data-qa="show_more_replies_button"]` or `button:contains('Show ')`).
+            *   **While button exists AND oldest visible message is not older than 'yesterday':**
+                *   Click the "Show N more replies" button.
+                *   Wait for new replies to load.
+                *   Extract new messages from the sidebar and deduplicate with previously collected thread messages.
+                *   Re-evaluate the oldest message's timestamp to determine if further loading is needed.
+        *   **Close Thread Sidebar:** After all relevant replies are loaded, click the "Close" button (`button[aria-label="Close"]`) within the thread sidebar to return to the main "Threads" view.
+
+4.  **Aggregate and Output:**
+    *   Collect all messages from these expanded threads.
+    *   Deduplicate messages (if any overlap with the main conversation history).
+    *   Output these messages to a separate file (e.g., `[Conversation]_active_threads_[Date].txt`) or append them to the main daily export document with a clear separator.
 
 ## 5. Common Pitfalls
 
