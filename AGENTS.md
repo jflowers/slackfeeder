@@ -337,25 +337,62 @@ When processing browser exports with `src/main.py --browser-export-dm`, **you mu
 
 You can optionally provide `--browser-conversation-name` or `--browser-conversation-id` to help find the conversation in config, but the actual name from browser-export.json will always be used for folder naming.
 
-### Using Date Separators to Identify Gaps and Ensure Complete Coverage
+### Chain of Custody Scrolling Algorithm
 
-**Key Insight:** Slack displays date separators (e.g., "Friday, June 6th", "Tuesday, June 10th") in the DOM to mark when dates change. These separators are critical for efficient extraction:
+**Overview:** The `extract_dom_messages.py` script uses a "Chain of Custody" algorithm to ensure complete message extraction without gaps. This algorithm maintains a "frontier" (the oldest collected message timestamp) and verifies overlap between scroll views to detect and recover from gaps.
 
-1. **Identifying True Date Gaps:** If two non-consecutive date separators are visible in the DOM (e.g., "June 27th" and "July 7th"), this indicates there are **no messages** for the dates between them. This allows you to skip unnecessary scrolling through date ranges with no messages.
+**Algorithm Steps:**
 
-2. **Ensuring Complete Day Coverage:** When extracting messages for a specific date, check that the date separator for that day is visible in the DOM. If you see the separator (e.g., "Friday, June 6th"), scroll backward until you see the previous date separator to ensure you've captured all messages from that day. **Note:** `extract_dom_messages.py` automatically performs this check when `start_date` or `end_date` is provided, using JavaScript to detect date separators and verify complete day coverage.
+1. **Initial Extraction:** Start at the bottom of the conversation (latest messages) and extract all visible messages.
+
+2. **Establish Frontier:** Identify the oldest message timestamp collected so far - this becomes the "frontier". We're scrolling UP (back in time), so the frontier represents the oldest point we've reached.
+
+3. **Main Scroll Loop:**
+   - **Scroll Up:** Press PageUp to load older messages
+   - **Extract View:** Extract all messages from the current DOM view
+   - **Verify Overlap:** Check if the newest message in the current view (`MAX(View)`) is >= the frontier timestamp
+   - **Gap Detection:** If overlap is missing (newest in view < frontier), a gap has been detected
+   - **Backtracking:** If gap detected, scroll down (ArrowDown) incrementally until overlap is restored
+   - **Collect Messages:** Add all messages from the valid view that are older than the frontier
+   - **Update Frontier:** Set new frontier to the oldest message in the current view (`MIN(View)`)
+
+4. **Termination Conditions:**
+   - Target start date reached (if specified)
+   - No new messages found for consecutive attempts (threshold: 10)
+   - Maximum attempts reached (safety limit: 200)
+
+**Key Concepts:**
+
+- **Frontier:** The oldest message timestamp collected so far. Represents the "chain of custody" - we maintain continuity by ensuring each new view overlaps with previously collected messages.
+
+- **Overlap Verification:** Before accepting a new view, we verify that it connects to our existing collection. If `newest_in_view >= frontier`, we have overlap and can safely collect older messages.
+
+- **Gap Detection:** If scrolling too far causes a gap (no overlap), the algorithm automatically backtracks by scrolling down until overlap is restored, preventing message loss.
+
+- **Message Deduplication:** Messages are stored in a dictionary keyed by timestamp, automatically preventing duplicates.
+
+**Benefits:**
+
+- **Robust:** Automatically detects and recovers from gaps
+- **Complete:** Ensures no messages are missed between scroll views
+- **Efficient:** Stops when target date reached or no new messages found
+- **Simple:** Single scroll direction (up) with backtracking when needed
+
+**Note:** This algorithm replaces the previous date-separator-based approach, providing more reliable gap detection and recovery. Date filtering is still applied after extraction completes.
+
+### Using Date Separators (Manual Extraction)
+
+**Note:** The Chain of Custody algorithm handles gap detection automatically. However, when manually extracting messages, date separators can still be useful for identifying gaps:
+
+**Key Insight:** Slack displays date separators (e.g., "Friday, June 6th", "Tuesday, June 10th") in the DOM to mark when dates change.
 
 **How to Use Date Separators:**
 
 - **From Snapshots:** Use `mcp_chrome-devtools_take_snapshot()` and look for `listitem` elements with `roledescription="separator"` that contain date text like "Friday, June 6th Press enter to select a date to jump to."
 - **Identifying Gaps:** If you see "June 27th" followed by "July 7th" (with no dates in between), you can confidently skip scrolling through June 28-30 and July 1-6.
-- **Complete Day Extraction:** When extracting June 6th, ensure you see both "June 6th" separator and the previous date separator (e.g., "May 27th") to confirm you've captured all messages from June 6th.
+- **Complete Day Extraction:** When extracting June 6th, ensure you see both June 6th separator and the previous date separator (e.g., "May 27th") to confirm you've captured all messages from June 6th.
 
-**Example Workflow:**
-1. Take a snapshot to see visible date separators
-2. Identify gaps: If "June 27th" and "July 7th" are both visible, skip June 28 - July 6
-3. For a target date (e.g., June 6th), scroll until you see both June 6th separator and the previous date separator
-4. Extract messages - you now have complete coverage for that day
+**Note:** When using `extract_dom_messages.py`, the Chain of Custody algorithm handles gap detection automatically - you don't need to manually check date separators.
 
 ## Common Pitfalls
 
@@ -369,7 +406,7 @@ You can optionally provide `--browser-conversation-name` or `--browser-conversat
 8. **Using response_dom_extraction.json**: Do NOT create or use `response_dom_extraction.json` or any intermediate files. Browser exports use the same code path as `--export-history` and should pipe messages via stdin or pass them directly.
 9. **Not using browser-export.json**: Consider using `--browser-export-config` and `--select-conversation` for automatic conversation selection and consistent sharing logic.
 10. **Sharing without SLACK_BOT_TOKEN**: Browser exports require `SLACK_BOT_TOKEN` to share folders with participants. Without it, sharing will be skipped with a warning.
-11. **Not using date separators**: Always check date separators in snapshots to identify true gaps and ensure complete day coverage. Don't waste time scrolling through date ranges with no messages. **Note:** When using `extract_dom_messages.py` with date ranges, the script automatically checks date separators to ensure complete day coverage - you don't need to manually verify this.
+11. **Not understanding Chain of Custody algorithm**: The `extract_dom_messages.py` script uses a frontier-based "Chain of Custody" algorithm that automatically detects gaps and backtracks. Trust the algorithm - it handles gap detection and recovery automatically.
 
 ## When Making Changes
 

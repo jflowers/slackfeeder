@@ -418,11 +418,15 @@ def extract_and_save_dom_messages(
         logger.info("Extracting messages from current view (no scroll)...")
         result = mcp_evaluate_script(function=script)
         if result and isinstance(result, dict):
-             if "messages" in result:
+            if "messages" in result:
                 msgs = result.get("messages", [])
-                for msg in msgs:
-                    if msg.get("ts"):
-                        collected_messages_map[msg["ts"]] = msg
+            elif "result" in result:
+                msgs = result["result"].get("messages", [])
+            else:
+                msgs = []
+            for msg in msgs:
+                if msg.get("ts"):
+                    collected_messages_map[msg["ts"]] = msg
 
     # Final Processing
     all_messages = list(collected_messages_map.values())
