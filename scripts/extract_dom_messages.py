@@ -215,28 +215,27 @@ def extract_and_save_dom_messages(
     end_date: Optional[str] = None,
     output_to_stdout: bool = False,
 ) -> Dict[str, Any]:
-    """Extract messages from DOM and optionally save to file or output to stdout.
+    """Extract messages from DOM with robust gap detection and scrolling.
 
-    Automatically scrolls through the conversation to load all messages by default.
-    Uses MCP tools to press PageDown keys and extract messages as they become visible.
+    Implements a "Chain of Custody" scrolling algorithm:
+    1. Start at the bottom (latest messages).
+    2. Scroll up.
+    3. Verify that the new view overlaps with the previous collected messages.
+    4. If a gap is detected (scrolled too far), scroll down until overlap is restored.
+    5. Continue until the start date is reached.
 
     Args:
-        mcp_evaluate_script: MCP function to evaluate JavaScript (must be callable)
-        mcp_press_key: MCP function to press keys (required for scrolling, must be callable)
-        output_file: Optional path to save extracted messages (if None and output_to_stdout=False, no file is created)
-        append: If True, append to existing file; if False, overwrite
-        auto_scroll: If True, automatically scroll through conversation (default: True)
+        mcp_evaluate_script: MCP function to evaluate JavaScript
+        mcp_press_key: MCP function to press keys
+        output_file: Optional path to save extracted messages
+        append: If True, append to existing file
+        auto_scroll: If True, automatically scroll through conversation
         start_date: Optional start date filter (YYYY-MM-DD format)
         end_date: Optional end date filter (YYYY-MM-DD format)
-        output_to_stdout: If True, output JSON to stdout instead of (or in addition to) file
+        output_to_stdout: If True, output JSON to stdout
 
     Returns:
         Dictionary with extraction results
-
-    Raises:
-        ValueError: If mcp_press_key or mcp_evaluate_script are not callable
-        OSError: If file cannot be written (only if output_file is provided)
-        PermissionError: If file permissions prevent writing (only if output_file is provided)
     """
     if not callable(mcp_press_key):
         raise ValueError("mcp_press_key must be callable")
@@ -244,8 +243,8 @@ def extract_and_save_dom_messages(
         raise ValueError("mcp_evaluate_script must be callable")
 
     script = extract_messages_from_dom_script()
-
-    # Load existing messages if appending and output_file is provided
+    
+    # Load existing messages if appending
     existing_messages = []
     if append and output_file and output_file.exists():
         try:
@@ -256,438 +255,231 @@ def extract_and_save_dom_messages(
         except Exception as e:
             logger.warning(f"Failed to load existing file: {e}")
 
-    all_extracted_messages = []
+    # Dictionary to store unique messages by timestamp
+    # Initialize with existing messages
+    collected_messages_map = {msg.get("ts"): msg for msg in existing_messages if msg.get("ts")}
+    
+    # Helper to get collected timestamps (for fast lookup)
+    def get_collected_timestamps() -> set:
+        return set(collected_messages_map.keys())
 
     if auto_scroll:
-        logger.info("Starting automated scrolling and extraction...")
+        logger.info("Starting robust scrolling with overlap verification...")
+        
+        # 1. Initial extraction (bottom of view)
+        result = mcp_evaluate_script(function=script)
+        initial_messages = []
+        
+        if result and isinstance(result, dict):
+            if "messages" in result:
+                initial_messages = result.get("messages", [])
+            elif "result" in result:
+                initial_messages = result["result"].get("messages", [])
+        
+        if not initial_messages:
+            logger.warning("No messages found in initial view. Ensure browser is on the correct page.")
+        else:
+            logger.info(f"Initial extraction: found {len(initial_messages)} messages")
+            for msg in initial_messages:
+                ts = msg.get("ts")
+                if ts:
+                    collected_messages_map[ts] = msg
+        
+        # Identify the "frontier" - the oldest message we have collected so far
+        # We are scrolling UP (back in time), so we want to extend beyond the oldest message
+        sorted_timestamps = sorted([float(ts) for ts in collected_messages_map.keys()])
+        frontier_ts = sorted_timestamps[0] if sorted_timestamps else float('inf')
+        
+        # Determine target timestamp from start_date
+        target_ts = 0.0
+        if start_date:
+            from datetime import datetime
+            dt = datetime.strptime(start_date, "%Y-%m-%d")
+            target_ts = dt.timestamp()
+            logger.info(f"Target start date: {start_date} (TS: {target_ts})")
+        
+        # Main Scroll Loop
+        # Logic:
+        # - Scroll Up (PageUp)
+        # - Extract View
+        # - Check if MAX(View) >= Frontier (Overlap)
+        # - If Gap: Scroll Down (ArrowDown) until Overlap
+        # - Collect all messages < Frontier
+        # - Update Frontier = MIN(View)
+        
         consecutive_no_new = 0
-        consecutive_complete_coverage = 0
-
-        for attempt in range(MAX_SCROLL_ATTEMPTS):
-            logger.info(f"Scroll attempt {attempt + 1}/{MAX_SCROLL_ATTEMPTS}")
-
-            # CRITICAL: Extract messages BEFORE scrolling to capture messages that might
-            # disappear from DOM when scrolling (Slack uses virtual scrolling)
-            try:
-                pre_scroll_result = mcp_evaluate_script(function=script)
-                if pre_scroll_result and isinstance(pre_scroll_result, dict):
-                    if "messages" in pre_scroll_result:
-                        pre_scroll_messages = pre_scroll_result.get("messages", [])
-                    elif "result" in pre_scroll_result:
-                        pre_scroll_messages = pre_scroll_result["result"].get("messages", [])
-                    else:
-                        pre_scroll_messages = []
-
-                    # Add any new messages from pre-scroll extraction
-                    existing_ts = {msg.get("ts") for msg in all_extracted_messages} | {
-                        msg.get("ts") for msg in existing_messages
-                    }
-                    new_pre_count = sum(
-                        1 for msg in pre_scroll_messages if msg.get("ts") not in existing_ts
-                    )
-                    if new_pre_count > 0:
-                        logger.info(
-                            f"Found {new_pre_count} new messages before scrolling (total visible: {len(pre_scroll_messages)})"
-                        )
-                        all_extracted_messages.extend(pre_scroll_messages)
-                else:
-                    pre_scroll_messages = []
-            except Exception as e:
-                logger.warning(f"Failed to extract messages before scroll: {e}")
-                pre_scroll_messages = []
-
-            # Press PageUp multiple times to load older messages (scroll backward)
-            # Add small delay between each press to avoid being too aggressive
-            for _ in range(PAGE_DOWN_PRESSES_PER_ATTEMPT):
-                mcp_press_key(key="PageUp")
-                time.sleep(SCROLL_KEY_DELAY_SECONDS)
-
-            # Wait for messages to load
-            time.sleep(SCROLL_WAIT_SECONDS)
-
-            # Extract messages from current view AFTER scrolling
-            try:
-                result = mcp_evaluate_script(function=script)
-
-                if result and isinstance(result, dict):
-                    if "messages" in result:
-                        extracted_data = result
-                    elif "result" in result:
-                        extracted_data = result["result"]
-                    else:
-                        logger.warning(f"Unexpected result format: {result.keys()}")
-                        continue
-
-                    new_messages = extracted_data.get("messages", [])
-                    if new_messages:
-                        # Check if we have any truly new messages
-                        # Optimize: avoid list concatenation by using set union
-                        existing_ts = {msg.get("ts") for msg in all_extracted_messages} | {
-                            msg.get("ts") for msg in existing_messages
-                        }
-                        new_count = sum(
-                            1 for msg in new_messages if msg.get("ts") not in existing_ts
-                        )
-
-                        if new_count > 0:
-                            logger.info(
-                                f"Found {new_count} new messages (total visible: {len(new_messages)})"
-                            )
-                            all_extracted_messages.extend(new_messages)
-                            consecutive_no_new = 0
-                        else:
-                            consecutive_no_new += 1
-                            logger.info(
-                                f"No new messages found ({consecutive_no_new}/{CONSECUTIVE_NO_NEW_MESSAGES_THRESHOLD})"
-                            )
-                    else:
-                        consecutive_no_new += 1
-                        logger.info(
-                            f"No messages extracted ({consecutive_no_new}/{CONSECUTIVE_NO_NEW_MESSAGES_THRESHOLD})"
-                        )
-
-                    # Check date separator coverage to ensure complete day coverage
-                    if start_date or end_date:
-                        coverage_info = _check_date_separator_coverage(
-                            mcp_evaluate_script, start_date=start_date, end_date=end_date
-                        )
-
-                        if coverage_info.get("complete"):
-                            consecutive_complete_coverage += 1
-                            logger.info(
-                                f"Complete day coverage confirmed ({consecutive_complete_coverage}/"
-                                f"{CONSECUTIVE_COMPLETE_COVERAGE_THRESHOLD}). "
-                                f"Visible dates: {', '.join(coverage_info.get('visible_separators', [])[:5])}"
-                            )
-
-                            # If we have complete coverage for multiple consecutive checks, we're done
-                            if (
-                                consecutive_complete_coverage
-                                >= CONSECUTIVE_COMPLETE_COVERAGE_THRESHOLD
-                            ):
-                                logger.info(
-                                    "Complete day coverage confirmed for multiple consecutive checks, "
-                                    "stopping scroll"
-                                )
-                                break
-                        else:
-                            consecutive_complete_coverage = 0
-                            missing_days = coverage_info.get("missing_days", [])
-                            if missing_days:
-                                logger.info(
-                                    f"Incomplete day coverage detected. Missing days: "
-                                    f"{', '.join(missing_days[:5])}"
-                                    f"{'...' if len(missing_days) > 5 else ''}"
-                                )
-
-                    # Check date range if specified (for backward scrolling, check oldest/start_date)
-                    if start_date and extracted_data.get("oldest"):
-                        from datetime import datetime
-
-                        try:
-                            oldest_ts = float(extracted_data["oldest"])
-                            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                            start_ts = start_dt.timestamp()
-                            if oldest_ts < start_ts:
-                                logger.info(f"Reached start date {start_date}, stopping scroll")
-                                break
-                        except Exception as e:
-                            logger.warning(f"Failed to check start date: {e}")
-
-                    # Stop if no new messages for several attempts AND we don't have a date range to verify
-                    if consecutive_no_new >= CONSECUTIVE_NO_NEW_MESSAGES_THRESHOLD:
-                        if not (start_date or end_date):
-                            # No date range to verify - stop based on message count alone
-                            logger.info(
-                                "No new messages found after multiple attempts, stopping scroll"
-                            )
-                            break
-                        else:
-                            # We have a date range - check coverage one more time before stopping
-                            coverage_info = _check_date_separator_coverage(
-                                mcp_evaluate_script, start_date=start_date, end_date=end_date
-                            )
-                            if coverage_info.get("complete"):
-                                logger.info(
-                                    "No new messages found, but complete day coverage confirmed. "
-                                    "Stopping scroll"
-                                )
-                                break
-                            else:
-                                logger.info(
-                                    "No new messages found, but day coverage incomplete. "
-                                    "Continuing to scroll..."
-                                )
-                                # Reset counter to give more attempts for date separator detection
-                                consecutive_no_new = max(0, consecutive_no_new - 2)
-                else:
-                    consecutive_no_new += 1
-
-            except Exception as e:
-                logger.warning(f"Error during scroll attempt {attempt + 1}: {e}")
+        max_attempts = 200  # Safety break
+        
+        for attempt in range(max_attempts):
+            logger.info(f"Scroll step {attempt + 1} (Frontier: {frontier_ts})")
+            
+            # Check if we reached the target
+            if target_ts > 0 and frontier_ts < target_ts:
+                logger.info(f"Reached target start date ({frontier_ts} < {target_ts}). Stopping.")
+                break
+                
+            # 1. Scroll Up
+            mcp_press_key(key="PageUp")
+            time.sleep(1.5) # Wait for load
+            
+            # 2. Extract
+            view_result = mcp_evaluate_script(function=script)
+            view_messages = []
+            if view_result and isinstance(view_result, dict):
+                if "messages" in view_result:
+                    view_messages = view_result.get("messages", [])
+                elif "result" in view_result:
+                    view_messages = view_result["result"].get("messages", [])
+            
+            if not view_messages:
+                logger.warning("Empty view after scroll.")
                 consecutive_no_new += 1
-                if consecutive_no_new >= CONSECUTIVE_NO_NEW_MESSAGES_THRESHOLD:
-                    # Check coverage before stopping on error
-                    if start_date or end_date:
-                        coverage_info = _check_date_separator_coverage(
-                            mcp_evaluate_script, start_date=start_date, end_date=end_date
-                        )
-                        if coverage_info.get("complete"):
-                            logger.info(
-                                "Complete day coverage confirmed despite errors. Stopping scroll"
-                            )
-                            break
-                    else:
+                if consecutive_no_new > 5:
+                    logger.warning("No messages found for 5 steps. Stopping.")
+                    break
+                continue
+
+            # 3. Verify Overlap
+            # Sort view messages by TS descending (newest first)
+            # We need the NEWEST message in the current view to connect to the OLDEST message we already have (Frontier)
+            view_messages.sort(key=lambda m: float(m.get("ts", 0)), reverse=True)
+            
+            newest_in_view_ts = float(view_messages[0].get("ts", 0))
+            oldest_in_view_ts = float(view_messages[-1].get("ts", 0))
+            
+            # Check for overlap: Is newest in view >= frontier?
+            # Note: Floating point comparison safety
+            if newest_in_view_ts < frontier_ts - 0.001:
+                logger.warning(f"GAP DETECTED! Newest visible ({newest_in_view_ts}) is older than frontier ({frontier_ts}).")
+                logger.info("Attempting to bridge gap by scrolling down...")
+                
+                # Backtracking Loop
+                gap_bridged = False
+                for back_step in range(10): # Max 10 small steps down
+                    mcp_press_key(key="ArrowDown")
+                    mcp_press_key(key="ArrowDown") # Double press for faster but fine movement
+                    time.sleep(1.0)
+                    
+                    # Check view again
+                    fix_result = mcp_evaluate_script(function=script)
+                    fix_messages = []
+                    if fix_result and isinstance(fix_result, dict):
+                         if "messages" in fix_result:
+                            fix_messages = fix_result.get("messages", [])
+                         elif "result" in fix_result:
+                            fix_messages = fix_result["result"].get("messages", [])
+                    
+                    if not fix_messages:
+                        continue
+                        
+                    fix_max_ts = max([float(m.get("ts", 0)) for m in fix_messages])
+                    
+                    if fix_max_ts >= frontier_ts - 0.001:
+                        logger.info(f"Gap bridged! Found overlap at {fix_max_ts}")
+                        view_messages = fix_messages # Update our current view to this valid view
+                        gap_bridged = True
                         break
-
-        logger.info(
-            f"Completed backward scrolling. Extracted {len(all_extracted_messages)} messages total"
-        )
-
-        # CRITICAL: After scrolling backward, scroll forward to capture any messages that
-        # might have been missed. Slack's virtual scrolling can cause messages to disappear
-        # from DOM when scrolling backward, so we need to scroll forward as well to ensure
-        # complete coverage of the target date range.
-        if start_date or end_date:
-            logger.info("Scrolling forward to ensure complete message coverage...")
-            forward_scroll_attempts = 0
-            max_forward_attempts = 20
-            consecutive_no_new_forward = 0
-
-            for forward_attempt in range(max_forward_attempts):
-                # Extract before scrolling forward
-                try:
-                    pre_forward_result = mcp_evaluate_script(function=script)
-                    if pre_forward_result and isinstance(pre_forward_result, dict):
-                        if "messages" in pre_forward_result:
-                            pre_forward_messages = pre_forward_result.get("messages", [])
-                        elif "result" in pre_forward_result:
-                            pre_forward_messages = pre_forward_result["result"].get("messages", [])
-                        else:
-                            pre_forward_messages = []
-
-                        existing_ts = {msg.get("ts") for msg in all_extracted_messages} | {
-                            msg.get("ts") for msg in existing_messages
-                        }
-                        new_forward_count = sum(
-                            1 for msg in pre_forward_messages if msg.get("ts") not in existing_ts
-                        )
-                        if new_forward_count > 0:
-                            logger.info(
-                                f"Found {new_forward_count} new messages before forward scroll (attempt {forward_attempt + 1})"
-                            )
-                            all_extracted_messages.extend(pre_forward_messages)
-                            consecutive_no_new_forward = 0
-                        else:
-                            consecutive_no_new_forward += 1
-                except Exception as e:
-                    logger.warning(f"Failed to extract before forward scroll: {e}")
-
-                # Scroll forward (PageDown) to load newer messages
-                mcp_press_key(key="PageDown")
-                time.sleep(SCROLL_KEY_DELAY_SECONDS)
-                mcp_press_key(key="PageDown")
-                time.sleep(SCROLL_WAIT_SECONDS)
-
-                # Extract after scrolling forward
-                try:
-                    post_forward_result = mcp_evaluate_script(function=script)
-                    if post_forward_result and isinstance(post_forward_result, dict):
-                        if "messages" in post_forward_result:
-                            post_forward_messages = post_forward_result.get("messages", [])
-                        elif "result" in post_forward_result:
-                            post_forward_messages = post_forward_result["result"].get(
-                                "messages", []
-                            )
-                        else:
-                            post_forward_messages = []
-
-                        existing_ts = {msg.get("ts") for msg in all_extracted_messages} | {
-                            msg.get("ts") for msg in existing_messages
-                        }
-                        new_post_count = sum(
-                            1 for msg in post_forward_messages if msg.get("ts") not in existing_ts
-                        )
-                        if new_post_count > 0:
-                            consecutive_no_new_forward = 0
-                            logger.info(
-                                f"Found {new_post_count} new messages after forward scroll (attempt {forward_attempt + 1})"
-                            )
-                            all_extracted_messages.extend(post_forward_messages)
-                        else:
-                            consecutive_no_new_forward += 1
-
-                        # Check if we've reached the end date
-                        if end_date and post_forward_result.get("latest"):
-                            from datetime import datetime
-
-                            try:
-                                latest_ts = float(post_forward_result["latest"])
-                                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-                                end_dt = end_dt.replace(hour=23, minute=59, second=59)
-                                end_ts = end_dt.timestamp()
-                                if latest_ts > end_ts:
-                                    logger.info(
-                                        f"Reached end date {end_date}, stopping forward scroll"
-                                    )
-                                    break
-                            except Exception as e:
-                                logger.warning(f"Failed to check end date: {e}")
-
-                        # Stop if no new messages for several attempts
-                        if consecutive_no_new_forward >= 3:
-                            logger.info("No new messages found after forward scrolling, stopping")
-                            break
-                except Exception as e:
-                    logger.warning(f"Failed to extract after forward scroll: {e}")
-                    consecutive_no_new_forward += 1
-                    if consecutive_no_new_forward >= 3:
-                        break
-
-        logger.info(
-            f"Completed all scrolling. Extracted {len(all_extracted_messages)} messages total"
-        )
-
-        # Extract from final view as well
-        try:
-            result = mcp_evaluate_script(function=script)
-            if result and isinstance(result, dict):
-                if "messages" in result:
-                    final_messages = result.get("messages", [])
-                elif "result" in result:
-                    final_messages = result["result"].get("messages", [])
-                else:
-                    final_messages = []
-
-                # Optimize: avoid list concatenation by using set union
-                existing_ts = {msg.get("ts") for msg in all_extracted_messages} | {
-                    msg.get("ts") for msg in existing_messages
-                }
-                final_new_count = sum(
-                    1 for msg in final_messages if msg.get("ts") not in existing_ts
-                )
-                if final_new_count > 0:
-                    logger.info(f"Found {final_new_count} new messages in final extraction")
-                    all_extracted_messages.extend(
-                        msg for msg in final_messages if msg.get("ts") not in existing_ts
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to extract final view: {e}")
-
-    # If not auto-scrolling, just extract current view
-    if not auto_scroll:
-        logger.info("Extracting messages from DOM (current view only)...")
-        try:
-            result = mcp_evaluate_script(function=script)
-
-            if not result:
-                logger.warning("DOM extraction returned no result")
-                return {"ok": False, "messages": [], "message_count": 0}
-
-            # Handle different response formats
-            if isinstance(result, dict):
-                if "messages" in result:
-                    extracted_data = result
-                elif "result" in result:
-                    extracted_data = result["result"]
-                else:
-                    logger.warning(f"Unexpected result format: {result.keys()}")
-                    return {"ok": False, "messages": [], "message_count": 0}
+                
+                if not gap_bridged:
+                    logger.error("Failed to bridge gap after backtracking. Continuing with potential data loss.")
+                    # We treat current view as the new reality and move on
+            
+            # 4. Collect messages
+            # Add all messages from the valid view
+            new_count = 0
+            for msg in view_messages:
+                ts = msg.get("ts")
+                if ts and ts not in collected_messages_map:
+                    collected_messages_map[ts] = msg
+                    new_count += 1
+            
+            if new_count > 0:
+                logger.info(f"Collected {new_count} new messages.")
+                consecutive_no_new = 0
             else:
-                logger.warning(f"Unexpected result type: {type(result)}")
-                return {"ok": False, "messages": [], "message_count": 0}
+                logger.info("No new messages in this view (already collected).")
+                consecutive_no_new += 1
+            
+            # 5. Update Frontier
+            # The new frontier is the oldest message in the current valid view
+            # (We sort view_messages descending above, so last item is oldest)
+            current_view_oldest = float(view_messages[-1].get("ts", 0))
+            if current_view_oldest < frontier_ts:
+                frontier_ts = current_view_oldest
+                logger.info(f"New frontier established at {frontier_ts}")
+            
+            # Stop if stuck
+            if consecutive_no_new >= 10: # Increased threshold for safety
+                logger.info("No new messages found for 10 consecutive steps. Assuming top of history.")
+                break
+    
+    else:
+        # Non-auto-scroll: just extract current view
+        logger.info("Extracting messages from current view (no scroll)...")
+        result = mcp_evaluate_script(function=script)
+        if result and isinstance(result, dict):
+             if "messages" in result:
+                msgs = result.get("messages", [])
+                for msg in msgs:
+                    if msg.get("ts"):
+                        collected_messages_map[msg["ts"]] = msg
 
-            all_extracted_messages = extracted_data.get("messages", [])
-
-        except Exception as e:
-            logger.error(f"Failed to extract messages from DOM: {e}", exc_info=True)
-            return {"ok": False, "messages": [], "message_count": 0}
-
-    # Combine with existing messages
-    all_messages = existing_messages + all_extracted_messages
-
+    # Final Processing
+    all_messages = list(collected_messages_map.values())
+    
     # Filter by date range if specified
     if start_date or end_date:
         from datetime import datetime
-
         filtered_messages = []
         for msg in all_messages:
             ts = msg.get("ts")
-            if not ts:
-                continue
+            if not ts: continue
             try:
                 msg_dt = datetime.fromtimestamp(float(ts))
                 if start_date:
-                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                    if msg_dt < start_dt:
-                        continue
+                    s_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    if msg_dt < s_dt: continue
                 if end_date:
-                    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-                    # Include entire end date (up to end of day)
-                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
-                    if msg_dt > end_dt:
-                        continue
+                    e_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+                    if msg_dt > e_dt: continue
                 filtered_messages.append(msg)
-            except Exception as e:
-                logger.warning(f"Failed to parse timestamp {ts}: {e}")
-                filtered_messages.append(msg)  # Include if we can't parse
+            except Exception:
+                filtered_messages.append(msg)
         all_messages = filtered_messages
 
-    # Deduplicate by timestamp
-    seen_ts = set()
-    unique_messages = []
-    for msg in all_messages:
-        ts = msg.get("ts")
-        if ts and ts not in seen_ts:
-            seen_ts.add(ts)
-            unique_messages.append(msg)
-
-    # Sort by timestamp
-    unique_messages.sort(key=lambda m: float(m.get("ts", 0)))
-
-    # Create combined result
+    # Sort
+    all_messages.sort(key=lambda m: float(m.get("ts", 0)))
+    
     combined_result = {
         "ok": True,
-        "messages": unique_messages,
-        "message_count": len(unique_messages),
-        "oldest": unique_messages[0].get("ts") if unique_messages else None,
-        "latest": unique_messages[-1].get("ts") if unique_messages else None,
-        "has_more": False,
+        "messages": all_messages,
+        "message_count": len(all_messages),
+        "oldest": all_messages[0].get("ts") if all_messages else None,
+        "latest": all_messages[-1].get("ts") if all_messages else None,
+        "has_more": False
     }
-
-    # Save to file only if output_file is provided (optional - can output to stdout instead)
+    
+    # Output
     if output_file:
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = output_file.with_suffix(output_file.suffix + ".tmp")
         try:
+            # Write to temp then rename for atomic write
+            temp_file = output_file.with_suffix(output_file.suffix + ".tmp")
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(combined_result, f, indent=2, ensure_ascii=False)
                 f.flush()
-                os.fsync(f.fileno())  # Ensure data is written to disk
-
-            # Atomic rename
+                os.fsync(f.fileno())
             temp_file.replace(output_file)
-            logger.info(f"Saved {len(unique_messages)} unique messages to {output_file}")
-        except (OSError, IOError, PermissionError) as e:
-            # Clean up temp file on error
-            if temp_file.exists():
-                try:
-                    temp_file.unlink()
-                except Exception:
-                    pass
-            logger.error(f"Failed to save extracted messages to {output_file}: {e}")
-            raise
-
-    logger.info(f"Date range: {combined_result['oldest']} to {combined_result['latest']}")
-
-    # Output to stdout if requested (for piping to main.py)
+            logger.info(f"Saved {len(all_messages)} messages to {output_file}")
+        except Exception as e:
+            logger.error(f"Failed to save file: {e}")
+            
     if output_to_stdout:
         json.dump(combined_result, sys.stdout, indent=2, ensure_ascii=False)
-        sys.stdout.write("\n")  # Add newline after JSON
+        sys.stdout.write("\n")
         sys.stdout.flush()
 
     return combined_result
-
 
 if __name__ == "__main__":
     # This script is designed to be called interactively with MCP tools
