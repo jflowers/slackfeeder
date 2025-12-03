@@ -2734,6 +2734,490 @@ Total Messages: {len(history)}
         # Log processing statistics
         _log_statistics(stats, args.upload_to_drive)
 
+    elif args.browser_export_dm:
+        # Handle browser-based DM export
+        # This uses the same code path as --export-history but extracts messages directly from DOM
+        from src.browser_response_processor import BrowserResponseProcessor
+        from scripts.extract_active_threads import extract_active_threads_for_daily_export
+        from scripts.extract_historical_threads import extract_historical_threads_via_search
+        import json
+
+        # Require browser-export.json config file
+        if not args.browser_export_config:
+            logger.error(
+                "ERROR: --browser-export-config is required for browser exports."
+            )
+            logger.error(
+                f"Browser exports require {BROWSER_EXPORT_CONFIG_FILENAME} to ensure consistent naming and sharing."
+            )
+            logger.error(
+                f"Example: --browser-export-config config/{BROWSER_EXPORT_CONFIG_FILENAME}"
+            )
+            sys.exit(1)
+        
+        # Load browser-export.json config
+        config_data = load_browser_export_config(args.browser_export_config)
+        if not config_data:
+            logger.error(
+                f"ERROR: Failed to load {BROWSER_EXPORT_CONFIG_FILENAME} from {args.browser_export_config}"
+            )
+            logger.error(
+                f"Ensure the file exists and has valid JSON structure with '{BROWSER_EXPORT_CONFIG_KEY}' array."
+            )
+            sys.exit(1)
+        
+        # Check if MCP tools are available for browser exports
+        if args.browser_export_dm and (mcp_evaluate_script is None or mcp_click is None or mcp_press_key is None or mcp_fill is None):
+            logger.error(
+                "ERROR: --browser-export-dm requires MCP browser automation tools (evaluate_script, click, press_key, fill) to be provided."
+            )
+            logger.error(
+                "When running via an agent, these are automatically passed. When running standalone, ensure appropriate mocks or a compatible environment."
+            )
+
+            sys.exit(1)
+        
+        # Find conversation in config by ID or name
+        conversation_info = None
+        if args.browser_conversation_id:
+            conversation_info = find_conversation_in_config(config_data, conversation_id=args.browser_conversation_id)
+        if not conversation_info and args.browser_conversation_name and args.browser_conversation_name != "DM":
+            conversation_info = find_conversation_in_config(config_data, conversation_name=args.browser_conversation_name)
+        
+        if not conversation_info:
+            logger.error(
+                f"ERROR: Conversation not found in {BROWSER_EXPORT_CONFIG_FILENAME}"
+            )
+            if args.browser_conversation_id:
+                logger.error(f"  Searched by ID: {args.browser_conversation_id}")
+            if args.browser_conversation_name and args.browser_conversation_name != "DM":
+                logger.error(f"  Searched by name: {args.browser_conversation_name}")
+            logger.error(
+                f"Ensure the conversation exists in {BROWSER_EXPORT_CONFIG_FILENAME} with matching ID or name."
+            )
+            sys.exit(1)
+        
+        # Always use conversation name and ID from config (ensures consistency)
+        conversation_name = conversation_info.get("name")
+        if not conversation_name:
+            logger.error(
+                f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'name' field"
+            )
+            sys.exit(1)
+        
+        # Always use ID from config
+        args.browser_conversation_id = conversation_info.get("id")
+        if not args.browser_conversation_id:
+            logger.error(
+                f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'id' field"
+            )
+
+            sys.exit(1)
+        
+        logger.info(f"Using conversation from config: {conversation_name} ({args.browser_conversation_id})")
+        
+        # Warn if user provided --browser-conversation-name that doesn't match config
+        if args.browser_conversation_name and args.browser_conversation_name != "DM" and args.browser_conversation_name != conversation_name:
+            logger.warning(
+                f"Provided --browser-conversation-name '{args.browser_conversation_name}' doesn't match config name '{conversation_name}'. "
+                f"Using config name '{conversation_name}' for consistency."
+            )
+        
+        # If --select-conversation is enabled, select conversation from sidebar
+        if args.select_conversation:
+            if not args.browser_conversation_id:
+                logger.warning("--select-conversation enabled but no conversation ID found. Skipping selection.")
+                logger.warning("Provide --browser-conversation-id or use --browser-export-config to enable automatic selection.")
+            else:
+                logger.info(f"Selecting conversation {args.browser_conversation_id} from sidebar...")
+                # Note: Actual selection will be done by agent using MCP chrome-devtools tools
+                # This is a placeholder - the agent should implement the selection logic
+                # If selection fails, the agent should log a warning but continue with extraction
+                try:
+                    select_conversation_from_sidebar(args.browser_conversation_id)
+                except Exception as e:
+                    logger.warning(f"Failed to select conversation from sidebar: {e}", exc_info=True)
+                    logger.warning("Continuing with extraction - ensure browser is positioned on the correct conversation.")
+
+        logger.info("Browser-based DM export mode (DOM extraction)")
+        logger.info(f"Conversation name: {conversation_name}")
+        logger.info("Reading messages from stdin (no intermediate files)")
+
+        # Initialize processor for conversation filtering only
+        processor = BrowserResponseProcessor()
+        
+        # Extract messages from DOM (main conversation history)
+        # Messages must be provided via stdin (JSON format) - no intermediate files
+        # Browser exports use the same code path as --export-history
+        main_conversation_messages = []
+        
+        # Read messages from stdin (required - no file fallback)
+        if sys.stdin.isatty():  # stdin is a TTY (no data piped)
+            logger.error("No messages provided. Messages must be piped via stdin.")
+            logger.info("")
+            logger.info("To extract messages from DOM:")
+            logger.info("1. Open Slack in a browser and navigate to the conversation")
+            logger.info("2. Scroll to load all messages in the date range")
+            logger.info("3. Use MCP chrome-devtools tools to run DOM extraction")
+            logger.info("   Example: Use mcp_chrome-devtools_evaluate_script with extract_messages_from_dom_script()")
+            logger.info("4. Pipe JSON to this script:")
+            logger.info("   python scripts/extract_dom_messages.py --output-to-stdout | \\")
+            logger.info("     python src/main.py --browser-export-dm --browser-conversation-name 'Name' --upload-to-drive")
+            logger.info("")
+            logger.info("Browser exports use the same file conventions as --export-history:")
+            logger.info("  - File naming: {conversation_name} slack messages {YYYYMMDD}")
+            logger.info("  - Same grouping and formatting logic")
+            logger.info("  - No intermediate files needed")
+            logger.info("")
+            logger.info("See ReadMe.md for detailed instructions.")
+            sys.exit(1)
+        
+        try:
+            logger.info("Reading messages from stdin...")
+            stdin_data = sys.stdin.read()
+            if not stdin_data.strip():
+                logger.error("No data received from stdin")
+                sys.exit(1)
+            
+            response_data = json.loads(stdin_data)
+            main_conversation_messages = response_data.get("messages", [])
+            logger.info(f"Loaded {len(main_conversation_messages)} messages from stdin")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from stdin: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Failed to read from stdin: {e}", exc_info=True)
+            sys.exit(1)
+        
+        if not main_conversation_messages and not args.extract_active_threads and not args.extract_historical_threads:
+            logger.error("No messages found in input and thread extraction flags are not enabled.")
+            sys.exit(1)
+
+        # Filter messages by conversation participants (browser exports may contain multiple conversations)
+        if main_conversation_messages:
+            main_conversation_messages = processor._filter_by_conversation_participants(main_conversation_messages, conversation_name)
+            if not main_conversation_messages:
+                logger.warning("No messages found after filtering main conversation by participants.")
+        
+        # --- Handle Active Thread Extraction ---
+        active_thread_messages = []
+        if args.extract_active_threads:
+            if args.upload_to_drive: # Only attempt if uploading to Drive
+                logger.info("Attempting to extract active threads from browser.")
+                try:
+                    # mcp_chrome-devtools_evaluate_script, mcp_chrome-devtools_click, mcp_chrome-devtools_press_key
+                    # These are available globally when running from Cursor/MCP.
+                    active_thread_messages = extract_active_threads_for_daily_export(
+                        mcp_evaluate_script=mcp_evaluate_script,
+                        mcp_click=mcp_click,
+                        mcp_press_key=mcp_press_key,
+                        target_conversation_name=conversation_name,
+                        export_date=datetime.now(timezone.utc), # Export for today and yesterday
+                    )
+                    logger.info(f"Collected {len(active_thread_messages)} messages from active threads.")
+                except Exception as e:
+                    logger.error(f"Failed to extract active threads: {e}", exc_info=True)
+            else:
+                logger.warning("--extract-active-threads is only supported with --upload-to-drive. Skipping thread extraction.")
+        
+        # --- Handle Historical Thread Extraction (Search) ---
+        historical_thread_messages = []
+        if args.extract_historical_threads:
+            if args.upload_to_drive:
+                logger.info("Attempting to extract historical threads via search.")
+                try:
+                    search_query = args.search_query
+                    if not search_query:
+                        # Construct query
+                        # Quote conversation name to handle spaces
+                        query_parts = [f'in:"{conversation_name}"']
+                        if args.start_date:
+                            query_parts.append(f'after:{args.start_date}')
+                        if args.end_date:
+                            query_parts.append(f'before:{args.end_date}')
+                        query_parts.append('is:thread')
+                        search_query = " ".join(query_parts)
+                    
+                    # Convert date strings to datetime for the extractor range check
+                    start_dt = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.start_date else datetime.min.replace(tzinfo=timezone.utc)
+                    end_dt = datetime.strptime(args.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.end_date else datetime.max.replace(tzinfo=timezone.utc)
+
+                    historical_thread_messages = extract_historical_threads_via_search(
+                        mcp_evaluate_script=mcp_evaluate_script,
+                        mcp_click=mcp_click,
+                        mcp_press_key=mcp_press_key,
+                        mcp_fill=mcp_fill,
+                        search_query=search_query,
+                        export_date_range=(start_dt, end_dt)
+                    )
+                    logger.info(f"Collected {len(historical_thread_messages)} messages from historical threads.")
+                except Exception as e:
+                    logger.error(f"Failed to extract historical threads: {e}", exc_info=True)
+            else:
+                logger.warning("--extract-historical-threads is only supported with --upload-to-drive.")
+
+        # Combine and deduplicate all messages from main conversation and active threads
+        all_messages_map = {msg.get("ts"): msg for msg in main_conversation_messages if msg.get("ts")}
+        for msg in active_thread_messages + historical_thread_messages:
+            ts = msg.get("ts")
+            if ts and ts not in all_messages_map:
+                all_messages_map[ts] = msg
+        all_messages = list(all_messages_map.values())
+        
+        # Sort combined messages chronologically
+        all_messages.sort(key=lambda m: float(m.get("ts", 0)))
+        
+        if not all_messages:
+            logger.warning("No messages found from main conversation or active threads.")
+            sys.exit(1)
+
+        # Determine oldest timestamp for incremental fetching
+        # Initialize Google Drive client early if uploading to Drive (needed for incremental export check)
+        browser_google_drive_client = None
+        sanitized_folder_name = None
+        safe_conversation_name = None
+        browser_google_drive_folder_id = None
+        browser_folder_id = None
+        
+        if args.upload_to_drive:
+            # Initialize Google Drive client early to check for metadata
+            google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+            if not google_drive_credentials_file:
+                logger.error(
+                    "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
+                )
+                sys.exit(1)
+
+            try:
+                google_drive_credentials_file = os.path.abspath(
+                    os.path.expanduser(google_drive_credentials_file)
+                )
+                if not os.path.exists(google_drive_credentials_file):
+                    logger.error(
+                        f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
+                    )
+                    sys.exit(1)
+            except (OSError, ValueError) as e:
+                logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
+                sys.exit(1)
+
+            browser_google_drive_client = GoogleDriveClient(google_drive_credentials_file)
+            sanitized_folder_name = sanitize_folder_name(conversation_name)
+            safe_conversation_name = sanitize_filename(conversation_name)
+            browser_google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
+            
+            # Create or get folder to check for metadata
+            browser_folder_id = browser_google_drive_client.create_folder(
+                sanitized_folder_name, browser_google_drive_folder_id
+            )
+        
+        # Get oldest timestamp using unified function
+        oldest_ts = get_oldest_timestamp_for_export(
+            google_drive_client=browser_google_drive_client,
+            folder_id=browser_folder_id,
+            conversation_name=conversation_name,
+            explicit_start_date=args.start_date,
+            upload_to_drive=args.upload_to_drive,
+            sanitized_folder_name=sanitized_folder_name,
+            safe_conversation_name=safe_conversation_name,
+        )
+        
+        if args.start_date and oldest_ts is None:
+            # Invalid start date format
+            logger.error(f"Invalid start date format: {args.start_date}")
+            sys.exit(1)
+
+        # Validate and filter messages by date range
+        latest_ts = None
+        if args.end_date:
+            latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
+            if latest_ts is None:
+                logger.error(f"Invalid end date format: {args.end_date}")
+                sys.exit(1)
+            logger.info(f"Filtering messages until: {args.end_date} ({latest_ts})")
+
+        # Filter messages by date range (validation happens inside function)
+        filtered_messages, error_msg = filter_messages_by_date_range(
+            messages=all_messages,
+            oldest_ts=oldest_ts,
+            latest_ts=latest_ts,
+            validate_range=True,
+            max_date_range_days=None,  # Browser exports don't validate against MAX_DATE_RANGE_DAYS
+        )
+
+        if error_msg:
+            logger.error(error_msg)
+            sys.exit(1)
+
+        all_messages = filtered_messages
+
+        if not all_messages:
+            logger.warning("No messages found after date range filtering")
+            sys.exit(1)
+
+        # Check if uploading to Google Drive
+        if args.upload_to_drive:
+            # Google Drive client may have been initialized earlier for incremental export check
+            if browser_google_drive_client is None:
+                # Validate Google Drive setup
+                google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+                if not google_drive_credentials_file:
+                    logger.error(
+                        "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
+                    )
+                    sys.exit(1)
+
+                try:
+                    google_drive_credentials_file = os.path.abspath(
+                        os.path.expanduser(google_drive_credentials_file)
+                    )
+                    if not os.path.exists(google_drive_credentials_file):
+                        logger.error(
+                            f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
+                        )
+                        sys.exit(1)
+                except (OSError, ValueError) as e:
+                    logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
+                    sys.exit(1)
+
+                browser_google_drive_client = GoogleDriveClient(google_drive_credentials_file)
+                sanitized_folder_name = sanitize_folder_name(conversation_name)
+                safe_conversation_name = sanitize_filename(conversation_name)
+                browser_google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
+
+            # Create or get folder (may have been created earlier for metadata check)
+            browser_folder_id = browser_google_drive_client.create_folder(
+                sanitized_folder_name, browser_google_drive_folder_id
+            )
+            if not browser_folder_id:
+                logger.error(f"Failed to create/get folder for {conversation_name}")
+                sys.exit(1)
+
+            logger.info(f"Using folder: {sanitized_folder_name} ({browser_folder_id})")
+
+            # Upload messages using unified function
+            stats = upload_messages_to_drive(
+                messages=all_messages,
+                conversation_name=conversation_name,
+                conversation_id=args.browser_conversation_id,
+                google_drive_client=browser_google_drive_client,
+                google_drive_folder_id=browser_google_drive_folder_id,
+                slack_client=None, # Not used for browser exports
+                people_cache=None, # Not used for browser exports
+                use_display_names=True,
+            )
+
+            # Share folder with members (same logic as Slack export)
+            if conversation_info and browser_folder_id:
+                # Initialize Slack client for sharing (required for member lookup)
+                slack_bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+                if slack_bot_token:
+                    try:
+                        browser_slack_client = SlackClient(slack_bot_token)
+                        # Load people cache and opt-out sets
+                        people_cache, no_notifications_set, no_share_set, people_json = _load_people_cache()
+                        
+                        # Add sharing stats to stats dict
+                        stats["shared"] = 0
+                        stats["share_failed"] = 0
+                        
+                        # Share folder using same logic as Slack export
+                        share_folder_for_browser_export(
+                            browser_google_drive_client,
+                            browser_folder_id,
+                            browser_slack_client,
+                            conversation_info,
+                            conversation_name,
+                            no_notifications_set,
+                            no_share_set,
+                            stats,
+                            people_cache=people_cache,
+                            people_json=people_json,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to share folder (Slack client error): {e}", exc_info=True)
+                else:
+                    logger.warning("SLACK_BOT_TOKEN not set - skipping folder sharing. Set token to enable sharing.")
+
+            # Log statistics
+            _log_statistics(stats, upload_to_drive=True)
+
+        else:
+            # Local file export - use same logic as main export but write to files
+            # Group messages by date
+            daily_groups = group_messages_by_date(all_messages)
+            logger.info(
+                f"Grouped {len(all_messages)} messages into {len(daily_groups)} daily group(s)"
+            )
+
+            if not daily_groups:
+                logger.warning("No messages found to export")
+                sys.exit(1)
+
+            # Setup output directory
+            output_dir = _setup_output_directory()
+
+            # Write each day to a file - same naming convention as main export
+            stats = {
+                "processed": 0,
+                "total_messages": 0,
+            }
+
+            sorted_dates = sorted(daily_groups.keys())
+            for date_key in sorted_dates:
+                daily_messages = daily_groups[date_key]
+                logger.info(f"Processing {len(daily_messages)} messages for date {date_key}")
+
+                # Process messages - use preprocess_history with use_display_names=True
+                processed_messages = preprocess_history(
+                    daily_messages, slack_client=None, people_cache=None, use_display_names=True
+                )
+
+                if not processed_messages or not processed_messages.strip():
+                    logger.warning(
+                        f"No processable content found for {date_key} of {conversation_name}. Skipping."
+                    )
+                    continue
+
+                # Add metadata header (same format as main export)
+                export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
+                date_display = date_obj.strftime("%Y-%m-%d")
+                metadata_header = f"""Slack Conversation Export
+Channel: {conversation_name}
+Channel ID: [Browser Export - No ID]
+Export Date: {export_date}
+Date: {date_display}
+Total Messages: {len(daily_messages)}
+
+{'='*80}
+
+"""
+                processed_messages = metadata_header + processed_messages
+
+                # Create filename - same convention as main export
+                safe_conversation_name = sanitize_filename(conversation_name)
+                output_filename = f"{safe_conversation_name}_history_{date_key}.txt"
+                output_filepath = os.path.join(output_dir, output_filename)
+
+                # Write file
+                try:
+                    with open(output_filepath, "w", encoding="utf-8") as f:
+                        f.write(processed_messages)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    
+                    stats["processed"] += 1
+                    stats["total_messages"] += len(daily_messages)
+                    logger.info(f"Saved processed history to {output_filepath}")
+                except IOError as e:
+                    logger.error(f"Failed to write file {output_filepath}: {e}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Unexpected error writing file {output_filepath}: {e}", exc_info=True)
+                    continue
+
+            logger.info(f"Export complete: {stats['total_messages']} messages across {len(daily_groups)} dates")
 
 
 if __name__ == "__main__":
@@ -2876,497 +3360,8 @@ if __name__ == "__main__":
             logger.error(f"Failed to set up authentication: {e}", exc_info=True)
             sys.exit(1)
     elif args.browser_export_dm:
-        print("DEBUG: Entering browser_export_dm block")
-        # Handle browser-based DM export
-        # This uses the same code path as --export-history but extracts messages directly from DOM
-        from pathlib import Path
-        from datetime import datetime, timezone
-        from src.browser_scraper import extract_messages_from_dom
-        from scripts.extract_active_threads import extract_active_threads_for_daily_export
-        from scripts.extract_historical_threads import extract_historical_threads_via_search
-
-        print("DEBUG: Checking browser_export_config")
-        # Require browser-export.json config file
-        if not args.browser_export_config:
-            logger.error(
-                "ERROR: --browser-export-config is required for browser exports."
-            )
-            logger.error(
-                f"Browser exports require {BROWSER_EXPORT_CONFIG_FILENAME} to ensure consistent naming and sharing."
-            )
-            logger.error(
-                f"Example: --browser-export-config config/{BROWSER_EXPORT_CONFIG_FILENAME}"
-            )
-            sys.exit(1)
-        
-        # Load browser-export.json config
-        config_data = load_browser_export_config(args.browser_export_config)
-        if not config_data:
-            logger.error(
-                f"ERROR: Failed to load {BROWSER_EXPORT_CONFIG_FILENAME} from {args.browser_export_config}"
-            )
-            logger.error(
-                f"Ensure the file exists and has valid JSON structure with '{BROWSER_EXPORT_CONFIG_KEY}' array."
-            )
-            print("DEBUG: Exiting due to invalid browser_export_config")
-            sys.exit(1)
-        
-        # Check if MCP tools are available for browser exports
-        if args.browser_export_dm and (mcp_evaluate_script is None or mcp_click is None or mcp_press_key is None or mcp_fill is None):
-            logger.error(
-                "ERROR: --browser-export-dm requires MCP browser automation tools (evaluate_script, click, press_key, fill) to be provided."
-            )
-            logger.error(
-                "When running via an agent, these are automatically passed. When running standalone, ensure appropriate mocks or a compatible environment."
-            )
-
-            sys.exit(1)
-        
-        # Find conversation in config by ID or name
-        conversation_info = None
-        if args.browser_conversation_id:
-            conversation_info = find_conversation_in_config(config_data, conversation_id=args.browser_conversation_id)
-        if not conversation_info and args.browser_conversation_name and args.browser_conversation_name != "DM":
-            conversation_info = find_conversation_in_config(config_data, conversation_name=args.browser_conversation_name)
-        
-        if not conversation_info:
-            logger.error(
-                f"ERROR: Conversation not found in {BROWSER_EXPORT_CONFIG_FILENAME}"
-            )
-            if args.browser_conversation_id:
-                logger.error(f"  Searched by ID: {args.browser_conversation_id}")
-            if args.browser_conversation_name and args.browser_conversation_name != "DM":
-                logger.error(f"  Searched by name: {args.browser_conversation_name}")
-            logger.error(
-                f"Ensure the conversation exists in {BROWSER_EXPORT_CONFIG_FILENAME} with matching ID or name."
-            )
-            sys.exit(1)
-        
-        # Always use conversation name and ID from config (ensures consistency)
-        conversation_name = conversation_info.get("name")
-        if not conversation_name:
-            logger.error(
-                f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'name' field"
-            )
-            print("DEBUG: Exiting due to missing conversation name in config")
-            sys.exit(1)
-        
-        # Always use ID from config
-        args.browser_conversation_id = conversation_info.get("id")
-        if not args.browser_conversation_id:
-            logger.error(
-                f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'id' field"
-            )
-
-            sys.exit(1)
-        
-        logger.info(f"Using conversation from config: {conversation_name} ({args.browser_conversation_id})")
-        
-        # Warn if user provided --browser-conversation-name that doesn't match config
-        if args.browser_conversation_name and args.browser_conversation_name != "DM" and args.browser_conversation_name != conversation_name:
-            logger.warning(
-                f"Provided --browser-conversation-name '{args.browser_conversation_name}' doesn't match config name '{conversation_name}'. "
-                f"Using config name '{conversation_name}' for consistency."
-            )
-        
-        # If --select-conversation is enabled, select conversation from sidebar
-        if args.select_conversation:
-            if not args.browser_conversation_id:
-                logger.warning("--select-conversation enabled but no conversation ID found. Skipping selection.")
-                logger.warning("Provide --browser-conversation-id or use --browser-export-config to enable automatic selection.")
-            else:
-                logger.info(f"Selecting conversation {args.browser_conversation_id} from sidebar...")
-                # Note: Actual selection will be done by agent using MCP chrome-devtools tools
-                # This is a placeholder - the agent should implement the selection logic
-                # If selection fails, the agent should log a warning but continue with extraction
-                try:
-                    select_conversation_from_sidebar(args.browser_conversation_id)
-                except Exception as e:
-                    logger.warning(f"Failed to select conversation from sidebar: {e}", exc_info=True)
-                    logger.warning("Continuing with extraction - ensure browser is positioned on the correct conversation.")
-
-        logger.info("Browser-based DM export mode (DOM extraction)")
-        logger.info(f"Conversation name: {conversation_name}")
-        logger.info("Reading messages from stdin (no intermediate files)")
-
-        # Initialize processor for conversation filtering only
-        processor = BrowserResponseProcessor()
-        
-        # Extract messages from DOM (main conversation history)
-        # Messages must be provided via stdin (JSON format) - no intermediate files
-        # Browser exports use the same code path as --export-history
-        main_conversation_messages = []
-        import json
-        
-        # Read messages from stdin (required - no file fallback)
-        if sys.stdin.isatty():  # stdin is a TTY (no data piped)
-            logger.error("No messages provided. Messages must be piped via stdin.")
-            logger.info("")
-            logger.info("To extract messages from DOM:")
-            logger.info("1. Open Slack in a browser and navigate to the conversation")
-            logger.info("2. Scroll to load all messages in the date range")
-            logger.info("3. Use MCP chrome-devtools tools to run DOM extraction")
-            logger.info("   Example: Use mcp_chrome-devtools_evaluate_script with extract_messages_from_dom_script()")
-            logger.info("4. Pipe JSON to this script:")
-            logger.info("   python scripts/extract_dom_messages.py --output-to-stdout | \\")
-            logger.info("     python src/main.py --browser-export-dm --browser-conversation-name 'Name' --upload-to-drive")
-            logger.info("")
-            logger.info("Browser exports use the same file conventions as --export-history:")
-            logger.info("  - File naming: {conversation_name} slack messages {YYYYMMDD}")
-            logger.info("  - Same grouping and formatting logic")
-            logger.info("  - No intermediate files needed")
-            logger.info("")
-            logger.info("See ReadMe.md for detailed instructions.")
-            print("DEBUG: Exiting due to no stdin messages")
-            sys.exit(1)
-        
-        try:
-            logger.info("Reading messages from stdin...")
-            stdin_data = sys.stdin.read()
-            if not stdin_data.strip():
-                logger.error("No data received from stdin")
-                sys.exit(1)
-            
-            response_data = json.loads(stdin_data)
-            main_conversation_messages = response_data.get("messages", [])
-            logger.info(f"Loaded {len(main_conversation_messages)} messages from stdin")
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON from stdin: {e}")
-            sys.exit(1)
-        except Exception as e:
-            logger.error(f"Failed to read from stdin: {e}", exc_info=True)
-            sys.exit(1)
-        
-        if not main_conversation_messages and not args.extract_active_threads and not args.extract_historical_threads:
-            logger.error("No messages found in input and --extract-active-threads is not enabled.")
-            sys.exit(1)
-
-        # Filter messages by conversation participants (browser exports may contain multiple conversations)
-        if main_conversation_messages:
-            main_conversation_messages = processor._filter_by_conversation_participants(main_conversation_messages, conversation_name)
-            if not main_conversation_messages:
-                logger.warning("No messages found after filtering main conversation by participants.")
-        
-        # --- Handle Active Thread Extraction ---
-        active_thread_messages = []
-        if args.extract_active_threads:
-            if args.upload_to_drive: # Only attempt if uploading to Drive
-                logger.info("Attempting to extract active threads from browser.")
-                try:
-                    # mcp_chrome-devtools_evaluate_script, mcp_chrome-devtools_click, mcp_chrome-devtools_press_key
-                    # These are available globally when running from Cursor/MCP.
-                    active_thread_messages = extract_active_threads_for_daily_export(
-                        mcp_evaluate_script=mcp_evaluate_script,
-                        mcp_click=mcp_click,
-                        mcp_press_key=mcp_press_key,
-                        target_conversation_name=conversation_name,
-                        export_date=datetime.now(timezone.utc), # Export for today and yesterday
-                    )
-                    logger.info(f"Collected {len(active_thread_messages)} messages from active threads.")
-                except Exception as e:
-                    logger.error(f"Failed to extract active threads: {e}", exc_info=True)
-            else:
-                logger.warning("--extract-active-threads is only supported with --upload-to-drive. Skipping thread extraction.")
-        
-        # --- Handle Historical Thread Extraction (Search) ---
-        historical_thread_messages = []
-        if args.extract_historical_threads:
-            if args.upload_to_drive:
-                logger.info("Attempting to extract historical threads via search.")
-                try:
-                    search_query = args.search_query
-                    if not search_query:
-                        # Construct query
-                        # Quote conversation name to handle spaces
-                        query_parts = [f'in:"{conversation_name}"']
-                        if args.start_date:
-                            query_parts.append(f'after:{args.start_date}')
-                        if args.end_date:
-                            query_parts.append(f'before:{args.end_date}')
-                        query_parts.append('is:thread')
-                        search_query = " ".join(query_parts)
-                    
-                    # Convert date strings to datetime for the extractor range check
-                    start_dt = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.start_date else datetime.min.replace(tzinfo=timezone.utc)
-                    end_dt = datetime.strptime(args.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.end_date else datetime.max.replace(tzinfo=timezone.utc)
-
-                    print("DEBUG: Calling extract_historical_threads_via_search")
-                    historical_thread_messages = extract_historical_threads_via_search(
-                        mcp_evaluate_script=mcp_evaluate_script,
-                        mcp_click=mcp_click,
-                        mcp_press_key=mcp_press_key,
-                        mcp_fill=mcp_fill,
-                        search_query=search_query,
-                        export_date_range=(start_dt, end_dt)
-                    )
-                    logger.info(f"Collected {len(historical_thread_messages)} messages from historical threads.")
-                except Exception as e:
-                    logger.error(f"Failed to extract historical threads: {e}", exc_info=True)
-            else:
-                logger.warning("--extract-historical-threads is only supported with --upload-to-drive.")
-
-        # Combine and deduplicate all messages from main conversation and active threads
-        all_messages_map = {msg.get("ts"): msg for msg in main_conversation_messages if msg.get("ts")}
-        for msg in active_thread_messages + historical_thread_messages:
-            ts = msg.get("ts")
-            if ts and ts not in all_messages_map:
-                all_messages_map[ts] = msg
-        all_messages = list(all_messages_map.values())
-        
-        # Sort combined messages chronologically
-        all_messages.sort(key=lambda m: float(m.get("ts", 0)))
-        
-        if not all_messages:
-            logger.warning("No messages found from main conversation or active threads.")
-            sys.exit(1)
-
-        # Determine oldest timestamp for incremental fetching
-        # Initialize Google Drive client early if uploading to Drive (needed for incremental export check)
-        google_drive_client = None
-        sanitized_folder_name = None
-        safe_conversation_name = None
-        google_drive_folder_id = None
-        folder_id = None
-        
-        if args.upload_to_drive:
-            # Initialize Google Drive client early to check for metadata
-            google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
-            if not google_drive_credentials_file:
-                logger.error(
-                    "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
-                )
-                sys.exit(1)
-
-            try:
-                google_drive_credentials_file = os.path.abspath(
-                    os.path.expanduser(google_drive_credentials_file)
-                )
-                if not os.path.exists(google_drive_credentials_file):
-                    logger.error(
-                        f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
-                    )
-                    sys.exit(1)
-            except (OSError, ValueError) as e:
-                logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
-                sys.exit(1)
-
-            google_drive_client = GoogleDriveClient(google_drive_credentials_file)
-            sanitized_folder_name = sanitize_folder_name(conversation_name)
-            safe_conversation_name = sanitize_filename(conversation_name)
-            google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
-            
-            # Create or get folder to check for metadata
-            folder_id = google_drive_client.create_folder(
-                sanitized_folder_name, google_drive_folder_id
-            )
-        
-        # Get oldest timestamp using unified function
-        oldest_ts = get_oldest_timestamp_for_export(
-            google_drive_client=google_drive_client,
-            folder_id=folder_id,
-            conversation_name=conversation_name,
-            explicit_start_date=args.start_date,
-            upload_to_drive=args.upload_to_drive,
-            sanitized_folder_name=sanitized_folder_name,
-            safe_conversation_name=safe_conversation_name,
-        )
-        
-        if args.start_date and oldest_ts is None:
-            # Invalid start date format
-            logger.error(f"Invalid start date format: {args.start_date}")
-            sys.exit(1)
-
-        # Validate and filter messages by date range
-        latest_ts = None
-        if args.end_date:
-            latest_ts = convert_date_to_timestamp(args.end_date, is_end_date=True)
-            if latest_ts is None:
-                logger.error(f"Invalid end date format: {args.end_date}")
-                sys.exit(1)
-            logger.info(f"Filtering messages until: {args.end_date} ({latest_ts})")
-
-        # Filter messages by date range (validation happens inside function)
-        filtered_messages, error_msg = filter_messages_by_date_range(
-            messages=all_messages,
-            oldest_ts=oldest_ts,
-            latest_ts=latest_ts,
-            validate_range=True,
-            max_date_range_days=None,  # Browser exports don't validate against MAX_DATE_RANGE_DAYS
-        )
-
-        if error_msg:
-            logger.error(error_msg)
-            sys.exit(1)
-
-        all_messages = filtered_messages
-
-        if not all_messages:
-            logger.warning("No messages found after date range filtering")
-            sys.exit(1)
-
-        # Check if uploading to Google Drive
-        if args.upload_to_drive:
-            # Google Drive client may have been initialized earlier for incremental export check
-            if google_drive_client is None:
-                # Validate Google Drive setup
-                google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
-                if not google_drive_credentials_file:
-                    logger.error(
-                        "GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required for --upload-to-drive"
-                    )
-                    sys.exit(1)
-
-                try:
-                    google_drive_credentials_file = os.path.abspath(
-                        os.path.expanduser(google_drive_credentials_file)
-                    )
-                    if not os.path.exists(google_drive_credentials_file):
-                        logger.error(
-                            f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}"
-                        )
-                        sys.exit(1)
-                except (OSError, ValueError) as e:
-                    logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
-                    sys.exit(1)
-
-                google_drive_client = GoogleDriveClient(google_drive_credentials_file)
-                sanitized_folder_name = sanitize_folder_name(conversation_name)
-                safe_conversation_name = sanitize_filename(conversation_name)
-                google_drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
-
-            # Create or get folder (may have been created earlier for metadata check)
-            folder_id = google_drive_client.create_folder(
-                sanitized_folder_name, google_drive_folder_id
-            )
-            if not folder_id:
-                logger.error(f"Failed to create/get folder for {conversation_name}")
-                sys.exit(1)
-
-            logger.info(f"Using folder: {sanitized_folder_name} ({folder_id})")
-
-            # Upload messages using unified function
-            stats = upload_messages_to_drive(
-                messages=all_messages,
-                conversation_name=conversation_name,
-                conversation_id=args.browser_conversation_id,
-                google_drive_client=google_drive_client,
-                google_drive_folder_id=google_drive_folder_id,
-                slack_client=None, # Not used for browser exports
-                people_cache=None, # Not used for browser exports
-                use_display_names=True,
-            )
-
-            # Share folder with members (same logic as Slack export)
-            if conversation_info and folder_id:
-                # Initialize Slack client for sharing (required for member lookup)
-                slack_bot_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
-                if slack_bot_token:
-                    try:
-                        slack_client = SlackClient(slack_bot_token)
-                        # Load people cache and opt-out sets
-                        people_cache, no_notifications_set, no_share_set, people_json = _load_people_cache()
-                        
-                        # Add sharing stats to stats dict
-                        stats["shared"] = 0
-                        stats["share_failed"] = 0
-                        
-                        # Share folder using same logic as Slack export
-                        share_folder_for_browser_export(
-                            google_drive_client,
-                            folder_id,
-                            slack_client,
-                            conversation_info,
-                            conversation_name,
-                            no_notifications_set,
-                            no_share_set,
-                            stats,
-                            people_cache=people_cache,
-                            people_json=people_json,
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to share folder (Slack client error): {e}", exc_info=True)
-                else:
-                    logger.warning("SLACK_BOT_TOKEN not set - skipping folder sharing. Set token to enable sharing.")
-
-            # Log statistics
-            _log_statistics(stats, upload_to_drive=True)
-
-        else:
-            # Local file export - use same logic as main export but write to files
-            # Group messages by date
-            daily_groups = group_messages_by_date(all_messages)
-            logger.info(
-                f"Grouped {len(all_messages)} messages into {len(daily_groups)} daily group(s)"
-            )
-
-            if not daily_groups:
-                logger.warning("No messages found to export")
-                sys.exit(1)
-
-            # Setup output directory
-            output_dir = _setup_output_directory()
-
-            # Write each day to a file - same naming convention as main export
-            stats = {
-                "processed": 0,
-                "total_messages": 0,
-            }
-
-            sorted_dates = sorted(daily_groups.keys())
-            for date_key in sorted_dates:
-                daily_messages = daily_groups[date_key]
-                logger.info(f"Processing {len(daily_messages)} messages for date {date_key}")
-
-                # Process messages - use preprocess_history with use_display_names=True
-                processed_messages = preprocess_history(
-                    daily_messages, slack_client=None, people_cache=None, use_display_names=True
-                )
-
-                if not processed_messages or not processed_messages.strip():
-                    logger.warning(
-                        f"No processable content found for {date_key} of {conversation_name}. Skipping."
-                    )
-                    continue
-
-                # Add metadata header (same format as main export)
-                export_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                date_obj = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
-                date_display = date_obj.strftime("%Y-%m-%d")
-                metadata_header = f"""Slack Conversation Export
-Channel: {conversation_name}
-Channel ID: [Browser Export - No ID]
-Export Date: {export_date}
-Date: {date_display}
-Total Messages: {len(daily_messages)}
-
-{'='*80}
-
-"""
-                processed_messages = metadata_header + processed_messages
-
-                # Create filename - same convention as main export
-                safe_conversation_name = sanitize_filename(conversation_name)
-                output_filename = f"{safe_conversation_name}_history_{date_key}.txt"
-                output_filepath = os.path.join(output_dir, output_filename)
-
-                # Write file
-                try:
-                    with open(output_filepath, "w", encoding="utf-8") as f:
-                        f.write(processed_messages)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    
-                    stats["processed"] += 1
-                    stats["total_messages"] += len(daily_messages)
-                    logger.info(f"Saved processed history to {output_filepath}")
-                except IOError as e:
-                    logger.error(f"Failed to write file {output_filepath}: {e}")
-                    continue
-                except Exception as e:
-                    logger.error(f"Unexpected error writing file {output_filepath}: {e}", exc_info=True)
-                    continue
-
-            logger.info(f"Export complete: {stats['total_messages']} messages across {len(daily_groups)} dates")
+        # This block is handled inside main() function - call main() to execute it
+        main(args, mcp_evaluate_script=None, mcp_click=None, mcp_press_key=None, mcp_fill=None)
     elif not any([args.make_ref_files, args.export_history, args.upload_to_drive]):
         parser.print_help()
     else:

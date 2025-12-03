@@ -12,7 +12,11 @@ import src.main as main
 
 class TestMainHistoricalExtraction:
 
+    @patch('src.main._validate_and_setup_environment', return_value=(MagicMock(), MagicMock(), None))
     @patch('src.main.load_browser_export_config', return_value={ "browser-export": [{"id": "C1", "name": "proj-complytime", "export": True}]})
+    @patch('src.main.select_conversation_from_sidebar')
+    @patch('src.browser_response_processor.BrowserResponseProcessor')
+    @patch('src.main.upload_messages_to_drive', return_value={})
     @patch('scripts.extract_historical_threads.extract_historical_threads_via_search')
     @patch('src.main.setup_logging') # Mock logging setup to prevent file output during tests
     @patch('src.main.logger') # Mock the logger object itself
@@ -35,7 +39,11 @@ class TestMainHistoricalExtraction:
         mock_logger,
         mock_setup_logging,
         mock_extract_historical_threads_via_search,
-        mock_load_browser_export_config
+        mock_upload_messages_to_drive,
+        mock_browser_response_processor,
+        mock_select_conversation,
+        mock_load_browser_export_config,
+        mock_validate_and_setup_environment
     ):
         """Test the end-to-end flow of historical thread extraction via main.py."""
 
@@ -44,6 +52,18 @@ class TestMainHistoricalExtraction:
         mock_mcp_click = MagicMock()
         mock_mcp_press_key = MagicMock()
         mock_mcp_fill = MagicMock()
+
+        # Mock BrowserResponseProcessor instance
+        mock_processor_instance = MagicMock()
+        mock_processor_instance._filter_by_conversation_participants.return_value = []
+        mock_browser_response_processor.return_value = mock_processor_instance
+
+        # Mock GoogleDriveClient instance methods needed later
+        mock_drive_instance = MagicMock()
+        mock_drive_instance.create_folder.return_value = "mock_folder_id"
+        # Mock get_latest_export_timestamp to return None (no previous export)
+        mock_drive_instance.get_latest_export_timestamp.return_value = None
+        mock_google_drive_client.return_value = mock_drive_instance
 
         # Mock stdin to prevent sys.exit(1) due to no piped input
         mock_stdin_isatty = patch('sys.stdin.isatty', return_value=False)
@@ -60,6 +80,7 @@ class TestMainHistoricalExtraction:
                 start_date="2025-01-01",
                 end_date="2025-01-31",
                 extract_historical_threads=True,
+                extract_active_threads=False,
                 search_query="in:#proj-complytime after:2025-01-01 before:2025-01-31 is:thread",
                 # Include all other args that main.py expects, with their default values
                 select_conversation=True, 
@@ -72,8 +93,10 @@ class TestMainHistoricalExtraction:
                 bulk_export=False,
             )
 
+            # Use a timestamp that falls within the test date range (2025-01-01 to 2025-01-31)
+            # 2025-01-15 12:00:00 UTC = 1736942400.0
             mock_extract_historical_threads_via_search.return_value = [
-                {"ts": "1700000000.000001", "text": "Historical thread message"}
+                {"ts": "1736942400.000001", "text": "Historical thread message", "user": "test_user"}
             ]
 
             with patch.object(sys, 'argv', ['src/main.py'] + []): # argv is patched but not used for args parsing here
@@ -100,7 +123,11 @@ class TestMainHistoricalExtraction:
                 
                 mock_logger.info.assert_any_call("Attempting to extract historical threads via search.")
 
+    @patch('src.main._validate_and_setup_environment', return_value=(MagicMock(), MagicMock(), None))
     @patch('src.main.load_browser_export_config', return_value={ "browser-export": [{"id": "C1", "name": "my test channel", "export": True}]})
+    @patch('src.main.select_conversation_from_sidebar')
+    @patch('src.browser_response_processor.BrowserResponseProcessor')
+    @patch('src.main.upload_messages_to_drive', return_value={})
     @patch('scripts.extract_historical_threads.extract_historical_threads_via_search')
     @patch('src.main.setup_logging') # Mock logging setup to prevent file output during tests
     @patch('src.main.logger') # Mock the logger object itself
@@ -123,7 +150,11 @@ class TestMainHistoricalExtraction:
         mock_logger,
         mock_setup_logging,
         mock_extract_historical_threads_via_search,
-        mock_load_browser_export_config
+        mock_upload_messages_to_drive,
+        mock_browser_response_processor,
+        mock_select_conversation,
+        mock_load_browser_export_config,
+        mock_validate_and_setup_environment
     ):
         """Test that search query is correctly constructed when --search-query is not provided."""
 
@@ -131,6 +162,18 @@ class TestMainHistoricalExtraction:
         mock_mcp_click = MagicMock()
         mock_mcp_press_key = MagicMock()
         mock_mcp_fill = MagicMock()
+
+        # Mock BrowserResponseProcessor instance
+        mock_processor_instance = MagicMock()
+        mock_processor_instance._filter_by_conversation_participants.return_value = []
+        mock_browser_response_processor.return_value = mock_processor_instance
+
+        # Mock GoogleDriveClient instance methods needed later
+        mock_drive_instance = MagicMock()
+        mock_drive_instance.create_folder.return_value = "mock_folder_id"
+        # Mock get_latest_export_timestamp to return None (no previous export)
+        mock_drive_instance.get_latest_export_timestamp.return_value = None
+        mock_google_drive_client.return_value = mock_drive_instance
 
         # Mock stdin to prevent sys.exit(1) due to no piped input
         mock_stdin_isatty = patch('sys.stdin.isatty', return_value=False)
@@ -147,6 +190,7 @@ class TestMainHistoricalExtraction:
                 start_date="2025-03-01",
                 end_date="2025-03-05",
                 extract_historical_threads=True,
+                extract_active_threads=False,
                 search_query=None, # Explicitly not provided
                 select_conversation=True, 
                 make_ref_files=False,
@@ -157,6 +201,12 @@ class TestMainHistoricalExtraction:
                 browser_conversation_id=None, 
                 bulk_export=False,
             )
+
+            # Use a timestamp that falls within the test date range (2025-03-01 to 2025-03-05)
+            # 2025-03-03 12:00:00 UTC = 1741003200.0
+            mock_extract_historical_threads_via_search.return_value = [
+                {"ts": "1741003200.000001", "text": "Historical thread message", "user": "test_user"}
+            ]
 
             with patch.object(sys, 'argv', ['src/main.py'] + []):
                 main.main(
