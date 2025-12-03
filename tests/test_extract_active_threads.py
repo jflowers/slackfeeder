@@ -76,7 +76,7 @@ class TestExtractActiveThreads:
         self.mock_evaluate_script.assert_called_once()
 
     @patch('scripts.extract_active_threads.time.sleep', return_value=None)
-    @patch('scripts.extract_active_threads.extract_messages_from_dom')
+    @patch('src.browser_scraper.extract_messages_from_dom')
     def test_expand_and_extract_thread_replies(self, mock_extract_dom, mock_sleep):
         """Test expanding replies and extracting messages."""
         # Setup mocks
@@ -113,6 +113,8 @@ class TestExtractActiveThreads:
         # Assertions
         assert len(messages) == 1
         assert messages[0]["text"] == "Test message"
+        # Verify thread_ts injection
+        assert messages[0]["thread_ts"] == thread_info["thread_ts"]
         
         # Should click thread, show more, and close
         assert self.mock_click.call_count == 3

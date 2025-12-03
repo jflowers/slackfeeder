@@ -13,9 +13,10 @@ This approach doesn't require a Slack app/bot token, but requires:
 
 import json
 import time
+import textwrap
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from src.utils import setup_logging
 
@@ -28,6 +29,14 @@ NETWORK_REQUEST_WAIT_SECONDS = (
 )
 CONVERSATIONS_HISTORY_ENDPOINT = "conversations.history"
 MAX_SCROLL_ATTEMPTS = 100  # Maximum number of scroll attempts before stopping
+CLICK_WAIT_SECONDS = 1.0
+MAX_REPLIES_EXPAND_ATTEMPTS = 20
+SCROLL_WAIT_SECONDS = 1.5  # Wait time after scrolling for messages/threads to load
+
+# DOM Selectors
+THREADS_SIDEBAR_BUTTON_UID = "26_19" # UID for the 'Threads' button in the left sidebar
+THREAD_SIDEPANEL_SELECTOR = "div[role='dialog'][aria-label^='Thread']"
+SHOW_MORE_REPLIES_BUTTON_SELECTOR = "button:contains('Show ')"
 
 
 class BrowserScraper:
@@ -111,7 +120,10 @@ class BrowserScraper:
         return captured_responses
 
     def save_captured_response(
-        self, response_data: Dict[str, Any], output_dir: Path, index: int
+        self,
+        response_data: Dict[str, Any],
+        output_dir: Path,
+        index: int,
     ) -> Path:
         """Save a captured API response to a JSON file.
 
@@ -416,7 +428,6 @@ def extract_date_separators_script() -> str:
     }
     """
 
-
 def extract_date_separators_from_dom(mcp_evaluate_script) -> Dict[str, Any]:
     """Extract date separators from Slack DOM using JavaScript.
 
@@ -498,3 +509,158 @@ def extract_messages_from_dom(mcp_evaluate_script, container_selector: Optional[
     except Exception as e:
         logger.error(f"Failed to extract messages from DOM: {e}", exc_info=True)
         return {"ok": False, "messages": [], "message_count": 0}
+
+def _get_js_find_show_more_replies_button() -> str:
+    """Returns JavaScript code to find the 'Show N more replies' button."""
+    return textwrap.dedent(r'''
+    (threadSidepanelSelector, showMoreRepliesButtonSelector) => {
+        const sidebar = document.querySelector(threadSidepanelSelector);
+        if (!sidebar) return null;
+        const button = sidebar.querySelector('button[data-qa="show_more_replies_button"], ' + showMoreRepliesButtonSelector);
+        return button ? { uid: button.getAttribute('uid'), text: button.innerText } : null;
+    }
+    ''')
+
+def _get_js_find_close_button() -> str:
+    """Returns JavaScript code to find the thread sidebar close button."""
+    return textwrap.dedent(r'''
+    (threadSidepanelSelector) => {
+        const sidebar = document.querySelector(threadSidepanelSelector);
+        if (!sidebar) return null;
+        const closeButton = sidebar.querySelector('button[aria-label="Close"]');
+        return closeButton ? closeButton.getAttribute('uid') : null;
+    }
+    ''')
+
+def expand_and_extract_thread_replies(
+    mcp_evaluate_script: Callable,
+    mcp_click: Callable,
+    mcp_press_key: Callable,
+    thread_info: Dict[str, Any],
+    export_date_range: Tuple[datetime, datetime],
+) -> List[Dict[str, Any]]:
+    """Opens a thread in the sidebar and extracts all messages, expanding replies as needed.
+
+    Args:
+        mcp_evaluate_script: MCP function to evaluate JavaScript.
+        mcp_click: MCP function to click on elements.
+        mcp_press_key: MCP function to press keys.
+        thread_info: Dictionary with thread_ts, conversation_id, and click_element_uid.
+        export_date_range: Tuple of (start_datetime, end_datetime) for filtering messages.
+
+    Returns:
+        A list of all messages in the thread (root + replies).
+    """
+    logger.info(f"Opening thread {thread_info['thread_ts']} in sidebar...")
+
+    # Click the element to open the thread sidebar
+    if thread_info.get('click_element_uid'):
+        mcp_click(uid=thread_info['click_element_uid'])
+        time.sleep(CLICK_WAIT_SECONDS) # Wait for sidebar to open and load
+    else:
+        logger.warning(f"No click_element_uid for thread {thread_info['thread_ts']}, cannot open.")
+        return []
+
+    all_thread_messages = []
+    collected_timestamps = set()
+    start_dt, end_dt = export_date_range
+
+    # First extraction of visible messages in the sidebar
+    initial_messages_result = extract_messages_from_dom(
+        mcp_evaluate_script, container_selector=THREAD_SIDEPANEL_SELECTOR
+    )
+    if initial_messages_result and initial_messages_result['ok']:
+        for msg in initial_messages_result['messages']:
+            # Inject known thread_ts to ensure proper grouping
+            msg['thread_ts'] = thread_info['thread_ts']
+            
+            ts = msg.get('ts')
+            if ts and ts not in collected_timestamps:
+                all_thread_messages.append(msg)
+                collected_timestamps.add(ts)
+
+    logger.info(f"Initially found {len(all_thread_messages)} messages in thread sidebar.")
+
+    # Iteratively click 'Show N more replies' until all relevant replies are loaded
+    for attempt in range(MAX_REPLIES_EXPAND_ATTEMPTS):
+        logger.debug(f"Expanding thread replies attempt {attempt + 1}/{MAX_REPLIES_EXPAND_ATTEMPTS}...")
+        
+        # Find the 'Show N more replies' button within the sidebar
+        js_find_button = _get_js_find_show_more_replies_button()
+        button_info = mcp_evaluate_script(
+            function=js_find_button,
+            args=[
+                {"threadSidepanelSelector": THREAD_SIDEPANEL_SELECTOR},
+                {"showMoreRepliesButtonSelector": SHOW_MORE_REPLIES_BUTTON_SELECTOR}
+            ]
+        )
+        
+        button_uid = None
+        button_text = None
+        # Handle nested result from MCP
+        if isinstance(button_info, dict) and "result" in button_info:
+            button_info = button_info["result"]
+
+        if isinstance(button_info, dict) and button_info.get('uid'):
+            button_uid = button_info['uid']
+            button_text = button_info.get('text', '')
+        
+        if not button_uid:
+            logger.debug("'Show N more replies' button not found or no more replies.")
+            break # No more 'Show N more replies' buttons
+        
+        logger.info(f"Clicking '{button_text}' (UID: {button_uid})...")
+        mcp_click(uid=button_uid)
+        time.sleep(CLICK_WAIT_SECONDS) # Wait for replies to load
+
+        # Extract newly loaded messages
+        current_sidebar_messages_result = extract_messages_from_dom(
+            mcp_evaluate_script, container_selector=THREAD_SIDEPANEL_SELECTOR
+        )
+        new_messages_count = 0
+        if current_sidebar_messages_result and current_sidebar_messages_result['ok']:
+            for msg in current_sidebar_messages_result['messages']:
+                # Inject known thread_ts
+                msg['thread_ts'] = thread_info['thread_ts']
+                
+                ts = msg.get('ts')
+                if ts and ts not in collected_timestamps:
+                    all_thread_messages.append(msg)
+                    collected_timestamps.add(ts)
+                    new_messages_count += 1
+        
+        if new_messages_count > 0:
+            logger.info(f"Loaded {new_messages_count} new replies. Total in thread: {len(all_thread_messages)}")
+            # Check if the oldest message is outside our target date range
+            if all_thread_messages:
+                sorted_messages = sorted(all_thread_messages, key=lambda x: float(x.get('ts', 0)))
+                oldest_ts_float = float(sorted_messages[0].get('ts', 0))
+                if oldest_ts_float < start_dt.timestamp():
+                    logger.info(f"Oldest message in thread ({oldest_ts_float}) is older than export start date ({start_dt.timestamp()}). Stopping further expansion.")
+                    break
+        else:
+            logger.debug("No new messages loaded after expanding replies. Stopping.")
+            break
+
+    logger.info(f"Finished expanding replies. Total {len(all_thread_messages)} messages collected for thread {thread_info['thread_ts']}")
+    
+    # Close the thread sidebar before proceeding to the next thread
+    js_close_button = _get_js_find_close_button()
+    close_button_uid = mcp_evaluate_script(
+        function=js_close_button,
+        args=[
+            {"threadSidepanelSelector": THREAD_SIDEPANEL_SELECTOR}
+        ]
+    )
+    # Handle nested result from MCP
+    if isinstance(close_button_uid, dict) and "result" in close_button_uid:
+        close_button_uid = close_button_uid["result"]
+
+    if close_button_uid:
+        logger.info("Closing thread sidebar...")
+        mcp_click(uid=close_button_uid)
+        time.sleep(CLICK_WAIT_SECONDS)
+    else:
+        logger.warning("Could not find thread sidebar close button.")
+
+    return all_thread_messages

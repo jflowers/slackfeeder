@@ -5,7 +5,7 @@ import sys
 import time
 from calendar import monthrange
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Callable, Dict, List, Optional, Tuple, Set
 
 # Add project root to Python path so imports work regardless of how script is invoked
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2107,7 +2107,7 @@ def _log_statistics(stats: Dict[str, int], upload_to_drive: bool) -> None:
     logger.info("=" * 80)
 
 
-def main(args: argparse.Namespace) -> None:
+def main(args: argparse.Namespace, mcp_evaluate_script: Callable = None, mcp_click: Callable = None, mcp_press_key: Callable = None, mcp_fill: Callable = None) -> None:
     """Main function to run the Slack history export and upload process."""
     slack_client, google_drive_client, google_drive_folder_id = _validate_and_setup_environment()
 
@@ -2159,6 +2159,7 @@ def main(args: argparse.Namespace) -> None:
         logger.info(
             f"Found {len(channels_with_export)} conversations. Set 'export: false' in channels.json to exclude any you don't want to export."
         )
+
 
     if args.export_history:
         channels_data = load_json_file("config/channels.json")
@@ -2734,6 +2735,7 @@ Total Messages: {len(history)}
         _log_statistics(stats, args.upload_to_drive)
 
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Export Slack conversations and upload to Google Drive."
@@ -2811,6 +2813,16 @@ if __name__ == "__main__":
         action="store_true",
         help="[Browser Export Only] Extract full history of threads with recent activity (today/yesterday). Requires --browser-export-dm.",
     )
+    parser.add_argument(
+        "--extract-historical-threads",
+        action="store_true",
+        help="[Browser Export Only] Extract historical threads via Search (in:#channel is:thread). Requires --browser-export-dm.",
+    )
+    parser.add_argument(
+        "--search-query",
+        type=str,
+        help="Custom search query for historical thread extraction (e.g., 'in:#proj-foo after:2024-01-01'). If not provided, one is constructed from args.",
+    )
     # Set default to True after adding both arguments
     parser.set_defaults(select_conversation=True)
 
@@ -2864,13 +2876,16 @@ if __name__ == "__main__":
             logger.error(f"Failed to set up authentication: {e}", exc_info=True)
             sys.exit(1)
     elif args.browser_export_dm:
+        print("DEBUG: Entering browser_export_dm block")
         # Handle browser-based DM export
         # This uses the same code path as --export-history but extracts messages directly from DOM
         from pathlib import Path
         from datetime import datetime, timezone
         from src.browser_scraper import extract_messages_from_dom
         from scripts.extract_active_threads import extract_active_threads_for_daily_export
+        from scripts.extract_historical_threads import extract_historical_threads_via_search
 
+        print("DEBUG: Checking browser_export_config")
         # Require browser-export.json config file
         if not args.browser_export_config:
             logger.error(
@@ -2893,6 +2908,18 @@ if __name__ == "__main__":
             logger.error(
                 f"Ensure the file exists and has valid JSON structure with '{BROWSER_EXPORT_CONFIG_KEY}' array."
             )
+            print("DEBUG: Exiting due to invalid browser_export_config")
+            sys.exit(1)
+        
+        # Check if MCP tools are available for browser exports
+        if args.browser_export_dm and (mcp_evaluate_script is None or mcp_click is None or mcp_press_key is None or mcp_fill is None):
+            logger.error(
+                "ERROR: --browser-export-dm requires MCP browser automation tools (evaluate_script, click, press_key, fill) to be provided."
+            )
+            logger.error(
+                "When running via an agent, these are automatically passed. When running standalone, ensure appropriate mocks or a compatible environment."
+            )
+
             sys.exit(1)
         
         # Find conversation in config by ID or name
@@ -2921,6 +2948,7 @@ if __name__ == "__main__":
             logger.error(
                 f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'name' field"
             )
+            print("DEBUG: Exiting due to missing conversation name in config")
             sys.exit(1)
         
         # Always use ID from config
@@ -2929,6 +2957,7 @@ if __name__ == "__main__":
             logger.error(
                 f"ERROR: Conversation in {BROWSER_EXPORT_CONFIG_FILENAME} is missing 'id' field"
             )
+
             sys.exit(1)
         
         logger.info(f"Using conversation from config: {conversation_name} ({args.browser_conversation_id})")
@@ -2988,6 +3017,7 @@ if __name__ == "__main__":
             logger.info("  - No intermediate files needed")
             logger.info("")
             logger.info("See ReadMe.md for detailed instructions.")
+            print("DEBUG: Exiting due to no stdin messages")
             sys.exit(1)
         
         try:
@@ -3007,7 +3037,7 @@ if __name__ == "__main__":
             logger.error(f"Failed to read from stdin: {e}", exc_info=True)
             sys.exit(1)
         
-        if not main_conversation_messages and not args.extract_active_threads:
+        if not main_conversation_messages and not args.extract_active_threads and not args.extract_historical_threads:
             logger.error("No messages found in input and --extract-active-threads is not enabled.")
             sys.exit(1)
 
@@ -3026,9 +3056,9 @@ if __name__ == "__main__":
                     # mcp_chrome-devtools_evaluate_script, mcp_chrome-devtools_click, mcp_chrome-devtools_press_key
                     # These are available globally when running from Cursor/MCP.
                     active_thread_messages = extract_active_threads_for_daily_export(
-                        mcp_evaluate_script=default_api.evaluate_script, # Changed from mcp_chrome-devtools_evaluate_script
-                        mcp_click=default_api.click,                     # Changed from mcp_chrome-devtools_click
-                        mcp_press_key=default_api.press_key,             # Changed from mcp_chrome-devtools_press_key
+                        mcp_evaluate_script=mcp_evaluate_script,
+                        mcp_click=mcp_click,
+                        mcp_press_key=mcp_press_key,
                         target_conversation_name=conversation_name,
                         export_date=datetime.now(timezone.utc), # Export for today and yesterday
                     )
@@ -3038,9 +3068,46 @@ if __name__ == "__main__":
             else:
                 logger.warning("--extract-active-threads is only supported with --upload-to-drive. Skipping thread extraction.")
         
+        # --- Handle Historical Thread Extraction (Search) ---
+        historical_thread_messages = []
+        if args.extract_historical_threads:
+            if args.upload_to_drive:
+                logger.info("Attempting to extract historical threads via search.")
+                try:
+                    search_query = args.search_query
+                    if not search_query:
+                        # Construct query
+                        # Quote conversation name to handle spaces
+                        query_parts = [f'in:"{conversation_name}"']
+                        if args.start_date:
+                            query_parts.append(f'after:{args.start_date}')
+                        if args.end_date:
+                            query_parts.append(f'before:{args.end_date}')
+                        query_parts.append('is:thread')
+                        search_query = " ".join(query_parts)
+                    
+                    # Convert date strings to datetime for the extractor range check
+                    start_dt = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.start_date else datetime.min.replace(tzinfo=timezone.utc)
+                    end_dt = datetime.strptime(args.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.end_date else datetime.max.replace(tzinfo=timezone.utc)
+
+                    print("DEBUG: Calling extract_historical_threads_via_search")
+                    historical_thread_messages = extract_historical_threads_via_search(
+                        mcp_evaluate_script=mcp_evaluate_script,
+                        mcp_click=mcp_click,
+                        mcp_press_key=mcp_press_key,
+                        mcp_fill=mcp_fill,
+                        search_query=search_query,
+                        export_date_range=(start_dt, end_dt)
+                    )
+                    logger.info(f"Collected {len(historical_thread_messages)} messages from historical threads.")
+                except Exception as e:
+                    logger.error(f"Failed to extract historical threads: {e}", exc_info=True)
+            else:
+                logger.warning("--extract-historical-threads is only supported with --upload-to-drive.")
+
         # Combine and deduplicate all messages from main conversation and active threads
         all_messages_map = {msg.get("ts"): msg for msg in main_conversation_messages if msg.get("ts")}
-        for msg in active_thread_messages:
+        for msg in active_thread_messages + historical_thread_messages:
             ts = msg.get("ts")
             if ts and ts not in all_messages_map:
                 all_messages_map[ts] = msg
@@ -3303,4 +3370,4 @@ Total Messages: {len(daily_messages)}
     elif not any([args.make_ref_files, args.export_history, args.upload_to_drive]):
         parser.print_help()
     else:
-        main(args)
+        main(args, mcp_evaluate_script=None, mcp_click=None, mcp_press_key=None, mcp_fill=None)
