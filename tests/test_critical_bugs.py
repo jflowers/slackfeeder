@@ -9,7 +9,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.main import get_conversation_display_name, main, preprocess_history
+from src.main import main
+from src.export_api import get_conversation_display_name
+from src.message_processing import preprocess_history
 from src.slack_client import SlackClient
 from src.utils import format_timestamp
 
@@ -19,7 +21,7 @@ class TestCriticalBug1_MissingStatisticsKeys:
 
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
-    @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     def test_stats_dict_missing_keys(

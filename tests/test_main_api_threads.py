@@ -7,6 +7,8 @@ class TestMainApiThreads:
     @patch('src.main.SlackClient')
     @patch('src.main.GoogleDriveClient')
     @patch('src.main.load_json_file')
+    @patch('src.drive_upload.load_json_file')
+    @patch('src.drive_upload.load_people_cache')
     @patch('src.main.setup_logging')
     @patch('src.main._validate_and_setup_environment')
     @patch('src.main._setup_output_directory')
@@ -17,6 +19,8 @@ class TestMainApiThreads:
         mock_setup_output,
         mock_validate_env,
         mock_setup_logging,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_gdrive_class,
         mock_slack_class
@@ -28,10 +32,13 @@ class TestMainApiThreads:
         
         mock_setup_output.return_value = "/tmp/fake_output"
 
-        # Mock channels.json
+        # Mock channels.json - patch src.main.load_json_file which is used in main()
         mock_load_json.return_value = {
             "channels": [{"id": "C1234567890", "name": "test-channel", "export": True}]
         }
+        
+        # Mock load_people_cache to return empty cache
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         # Mock channel history: Contains a reply but NO root message
         # Thread root: 1000.0

@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.main import convert_date_to_timestamp, main
+from src.main import main
+from src.utils import convert_date_to_timestamp
 
 
 class TestPathValidation:
@@ -20,6 +21,8 @@ class TestPathValidation:
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
     @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
+    @patch("src.drive_upload.load_people_cache")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     @patch("src.main.os.path.exists")
@@ -32,6 +35,8 @@ class TestPathValidation:
         mock_exists,
         mock_create_dir,
         mock_getenv,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_drive_client,
         mock_slack_client,
@@ -48,6 +53,7 @@ class TestPathValidation:
         mock_access.return_value = True
 
         mock_load_json.return_value = {"channels": [{"id": "C123456789", "export": True}]}
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         args = argparse.Namespace()
         args.make_ref_files = False
@@ -68,6 +74,8 @@ class TestPathValidation:
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
     @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
+    @patch("src.drive_upload.load_people_cache")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     @patch("src.main.os.path.exists")
@@ -80,6 +88,8 @@ class TestPathValidation:
         mock_exists,
         mock_create_dir,
         mock_getenv,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_drive_client,
         mock_slack_client,
@@ -96,6 +106,7 @@ class TestPathValidation:
         mock_access.return_value = True
 
         mock_load_json.return_value = {"channels": [{"id": "C123456789", "export": True}]}
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         mock_slack_instance = Mock()
         mock_slack_instance.fetch_channel_history.return_value = []
@@ -167,6 +178,8 @@ class TestDateRangeValidation:
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
     @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
+    @patch("src.drive_upload.load_people_cache")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     @patch("src.main.os.path.exists")
@@ -179,6 +192,8 @@ class TestDateRangeValidation:
         mock_exists,
         mock_create_dir,
         mock_getenv,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_drive_client,
         mock_slack_client,
@@ -195,6 +210,7 @@ class TestDateRangeValidation:
         mock_access.return_value = True
 
         mock_load_json.return_value = {"channels": [{"id": "C123456789", "export": True}]}
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         mock_slack_instance = Mock()
         mock_slack_instance.fetch_channel_history.return_value = []
@@ -227,6 +243,8 @@ class TestBulkExport:
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
     @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
+    @patch("src.drive_upload.load_people_cache")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     @patch("src.main.os.path.exists")
@@ -239,6 +257,8 @@ class TestBulkExport:
         mock_exists,
         mock_create_dir,
         mock_getenv,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_drive_client,
         mock_slack_client,
@@ -255,6 +275,7 @@ class TestBulkExport:
         mock_access.return_value = True
 
         mock_load_json.return_value = {"channels": [{"id": "C123456789", "export": True}]}
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         mock_slack_instance = Mock()
         mock_slack_instance.fetch_channel_history.return_value = []
@@ -285,6 +306,8 @@ class TestBulkExport:
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
     @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
+    @patch("src.drive_upload.load_people_cache")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     @patch("src.main.os.path.exists")
@@ -297,6 +320,8 @@ class TestBulkExport:
         mock_exists,
         mock_create_dir,
         mock_getenv,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_drive_client,
         mock_slack_client,
@@ -315,6 +340,7 @@ class TestBulkExport:
         mock_access.return_value = True
 
         mock_load_json.return_value = {"channels": [{"id": "C123456789", "export": True}]}
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         # Create history with messages spanning multiple months
         history = []
@@ -382,6 +408,8 @@ class TestBulkExport:
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
     @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
+    @patch("src.drive_upload.load_people_cache")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     @patch("src.main.os.path.exists")
@@ -394,6 +422,8 @@ class TestBulkExport:
         mock_exists,
         mock_create_dir,
         mock_getenv,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_drive_client,
         mock_slack_client,
@@ -410,6 +440,7 @@ class TestBulkExport:
         mock_access.return_value = True
 
         mock_load_json.return_value = {"channels": [{"id": "C123456789", "export": True}]}
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         # Create history with more than 50,000 messages
         large_history = [
@@ -445,6 +476,8 @@ class TestBulkExport:
     @patch("src.main.SlackClient")
     @patch("src.main.GoogleDriveClient")
     @patch("src.main.load_json_file")
+    @patch("src.drive_upload.load_json_file")
+    @patch("src.drive_upload.load_people_cache")
     @patch("src.main.os.getenv")
     @patch("src.main.create_directory")
     @patch("src.main.os.path.exists")
@@ -457,6 +490,8 @@ class TestBulkExport:
         mock_exists,
         mock_create_dir,
         mock_getenv,
+        mock_load_people_cache,
+        mock_load_json_drive,
         mock_load_json,
         mock_drive_client,
         mock_slack_client,
@@ -473,6 +508,7 @@ class TestBulkExport:
         mock_access.return_value = True
 
         mock_load_json.return_value = {"channels": [{"id": "C123456789", "export": True}]}
+        mock_load_people_cache.return_value = ({}, set(), set(), None)
 
         mock_slack_instance = Mock()
         mock_slack_instance.fetch_channel_history.return_value = [

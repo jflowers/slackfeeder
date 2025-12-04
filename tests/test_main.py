@@ -10,24 +10,29 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.main import (
+from src.main import main
+from src.drive_upload import (
     _extract_members_from_conversation_name,
     _get_conversation_members,
-    _initialize_stats,
     _resolve_member_identifier,
     _should_share_with_member,
+    get_oldest_timestamp_for_export,
+    initialize_stats,
+)
+from src.message_processing import (
     estimate_file_size,
     filter_messages_by_date_range,
-    find_conversation_in_config,
-    get_conversation_display_name,
-    get_oldest_timestamp_for_export,
     group_messages_by_date,
-    load_browser_export_config,
     preprocess_history,
     replace_user_ids_in_text,
     should_chunk_export,
     split_messages_by_month,
 )
+from src.export_browser import (
+    find_conversation_in_config,
+    load_browser_export_config,
+)
+from src.export_api import get_conversation_display_name
 from src.slack_client import SlackClient
 
 
@@ -1024,11 +1029,11 @@ class TestFindConversationInConfig:
 
 
 class TestInitializeStats:
-    """Tests for _initialize_stats function."""
+    """Tests for initialize_stats function."""
 
-    def test_initialize_stats_returns_all_keys(self):
-        """Test that _initialize_stats returns all required keys."""
-        stats = _initialize_stats()
+    def testinitialize_stats_returns_all_keys(self):
+        """Test that initialize_stats returns all required keys."""
+        stats = initialize_stats()
         assert isinstance(stats, dict)
         assert "processed" in stats
         assert "skipped" in stats
@@ -1223,7 +1228,7 @@ class TestGetConversationMembers:
         slack_client.client.conversations_info.return_value = {"ok": False}  # API fails
         
         # Mock _resolve_member_identifier to return user info
-        with patch('src.main._resolve_member_identifier') as mock_resolve:
+        with patch('src.drive_upload._resolve_member_identifier') as mock_resolve:
             mock_resolve.side_effect = lambda name, *args, **kwargs: {
                 "slackId": "U123" if name == "Tara" else None,
                 "email": "tara@example.com" if name == "Tara" else None,
@@ -1248,7 +1253,7 @@ class TestGetConversationMembers:
         slack_client.get_channel_members.return_value = []  # API returns empty
         
         # Mock _resolve_member_identifier to return user info
-        with patch('src.main._resolve_member_identifier') as mock_resolve:
+        with patch('src.drive_upload._resolve_member_identifier') as mock_resolve:
             def resolve_side_effect(name, *args, **kwargs):
                 if name == "Emily Fox":
                     return {"slackId": "U456", "email": "emily@example.com", "displayName": "Emily Fox"}
@@ -1279,7 +1284,7 @@ class TestExtractMembersFromConversationName:
         """Test extracting a single name."""
         slack_client = Mock(spec=SlackClient)
         
-        with patch('src.main._resolve_member_identifier') as mock_resolve:
+        with patch('src.drive_upload._resolve_member_identifier') as mock_resolve:
             mock_resolve.return_value = {
                 "slackId": "U123",
                 "email": "tara@example.com",
@@ -1298,7 +1303,7 @@ class TestExtractMembersFromConversationName:
         """Test extracting multiple names from comma-separated string."""
         slack_client = Mock(spec=SlackClient)
         
-        with patch('src.main._resolve_member_identifier') as mock_resolve:
+        with patch('src.drive_upload._resolve_member_identifier') as mock_resolve:
             def resolve_side_effect(name, *args, **kwargs):
                 if name == "Tara":
                     return {"slackId": "U123", "email": "tara@example.com", "displayName": "Tara"}
@@ -1347,7 +1352,7 @@ class TestExtractMembersFromConversationName:
         """Test that unresolvable names are skipped."""
         slack_client = Mock(spec=SlackClient)
         
-        with patch('src.main._resolve_member_identifier') as mock_resolve:
+        with patch('src.drive_upload._resolve_member_identifier') as mock_resolve:
             def resolve_side_effect(name, *args, **kwargs):
                 if name == "Tara":
                     return {"slackId": "U123", "email": "tara@example.com", "displayName": "Tara"}
@@ -1378,7 +1383,7 @@ class TestExtractMembersFromConversationName:
         """Test fallback to email when slackId is not available."""
         slack_client = Mock(spec=SlackClient)
         
-        with patch('src.main._resolve_member_identifier') as mock_resolve:
+        with patch('src.drive_upload._resolve_member_identifier') as mock_resolve:
             mock_resolve.return_value = {
                 "slackId": None,  # No Slack ID
                 "email": "tara@example.com",
