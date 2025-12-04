@@ -486,6 +486,26 @@ Create `config/browser-export.json` with your conversations to export. This file
    
    **Note:** `--browser-export-config` is **required**. The conversation name from config (e.g., "Alice, John Doe") will be used for folder naming, ensuring consistency.
 
+### Historical Thread Extraction (Agent-Driven)
+
+You can ask an AI Agent (like Gemini) to automatically discover and extract full thread histories for a specific conversation using Slack's search. This is useful for backfilling old threads that might be missed by standard daily exports.
+
+**Requirement:** This feature *must* be executed by an AI Agent with access to `chrome-devtools` MCP tools. You cannot run it manually from the terminal.
+
+**Example Prompt for Agent:**
+> "Please run the historical thread extraction for the conversation 'proj-complytime'. Search for threads from Jan 1, 2025 to Jan 31, 2025. Use the browser export config."
+
+**The agent will internally run:**
+```bash
+python src/main.py \
+  --browser-export-dm \
+  --upload-to-drive \
+  --browser-export-config config/browser-export.json \
+  --browser-conversation-name "proj-complytime" \
+  --extract-historical-threads \
+  --search-query "in:\"proj-complytime\" after:2025-01-01 before:2025-01-31 is:thread"
+```
+
 ### Command-Line Options
 
 ```bash

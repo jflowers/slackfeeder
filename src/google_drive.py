@@ -1270,6 +1270,94 @@ class GoogleDriveClient:
                 f"An error occurred while revoking access to folder {folder_id} for {email_address}: {error}"
             )
             return False
-        except Exception as e:
-            logger.warning(f"Error revoking folder access: {e}", exc_info=True)
-            return False
+    def ensure_threads_folder(self, parent_folder_id: str) -> Optional[str]:
+        """Ensures the '_Threads' subfolder exists within the parent conversation folder.
+
+        Args:
+            parent_folder_id: The ID of the conversation's main folder.
+
+        Returns:
+            The ID of the '_Threads' folder, or None if creation failed.
+        """
+        return self.create_folder("_Threads", parent_folder_id)
+
+    def upload_thread_doc(
+        self, parent_folder_id: str, thread_messages: list, conversation_name: str
+    ) -> Optional[str]:
+        """Formats and uploads a single thread as a Google Doc in the _Threads archive.
+
+        Args:
+            parent_folder_id: The ID of the conversation's main folder.
+            thread_messages: List of message dictionaries representing the thread (root first).
+            conversation_name: Display name of the conversation (for metadata).
+
+        Returns:
+            The Document ID of the created/updated file, or None if failed.
+        """
+        if not thread_messages:
+            return None
+
+        # Sort just in case
+        thread_messages.sort(key=lambda m: float(m.get("ts", 0)))
+        root_msg = thread_messages[0]
+        root_ts = root_msg.get("ts")
+        
+        if not root_ts:
+            logger.warning("Thread root message missing timestamp, skipping archive.")
+            return None
+
+        # 1. Construct File Name
+        # Thread {YYYY-MM-DD} - {Snippet} ({Thread_TS})
+        dt = datetime.fromtimestamp(float(root_ts), tz=timezone.utc)
+        date_str = dt.strftime("%Y-%m-%d")
+        
+        text_snippet = root_msg.get("text", "")[:40].strip()
+        # Basic sanitization for filename
+        safe_snippet = re.sub(r'[\\/*?:"<>|]', "", text_snippet)
+        safe_snippet = safe_snippet.replace("\n", " ")
+        
+        doc_name = f"Thread {date_str} - {safe_snippet} ({root_ts})"
+
+        # 2. Format Content
+        formatted_lines = []
+        
+        # Header
+        formatted_lines.append(f"Thread Archive: {conversation_name}")
+        formatted_lines.append(f"Thread ID: {root_ts}")
+        formatted_lines.append(f"Date: {dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        formatted_lines.append(f"Participants: {len(set(m.get('user', 'unknown') for m in thread_messages))}")
+        formatted_lines.append("=" * 40)
+        formatted_lines.append("")
+
+        for msg in thread_messages:
+            m_dt = datetime.fromtimestamp(float(msg.get("ts", 0)), tz=timezone.utc)
+            timestamp_str = m_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            user = msg.get("user", "unknown") # In browser export, this is usually display name already
+            text = msg.get("text", "")
+            
+            # Format: [Timestamp] User: Message
+            formatted_lines.append(f"[{timestamp_str}] {user}:")
+            formatted_lines.append(text)
+            
+            # Attachments/Files (Basic representation)
+            if msg.get("files"):
+                for file in msg["files"]:
+                    formatted_lines.append(f"  [File: {file.get('name', 'unknown')} - {file.get('url', '')}]")
+            
+            formatted_lines.append("-" * 20) # Separator
+            formatted_lines.append("")
+
+        content = "\n".join(formatted_lines)
+
+        # 3. Ensure folder and Upload
+        threads_folder_id = self.ensure_threads_folder(parent_folder_id)
+        if not threads_folder_id:
+            logger.error(f"Failed to get/create _Threads folder for {conversation_name}")
+            return None
+
+        # Use overwrite=True because the thread export is "complete" at the time of extraction
+        # If we re-export, we want to update the full context.
+        # Actually, create_or_update_google_doc supports overwrite.
+        return self.create_or_update_google_doc(
+            doc_name, content, threads_folder_id, overwrite=True
+        )

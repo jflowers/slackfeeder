@@ -2926,6 +2926,31 @@ Total Messages: {len(history)}
             if args.upload_to_drive:
                 logger.info("Attempting to extract historical threads via search.")
                 try:
+                    # Initialize Google Drive client for thread archiving
+                    google_drive_credentials_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", "").strip()
+                    if not google_drive_credentials_file:
+                        logger.error("GOOGLE_DRIVE_CREDENTIALS_FILE environment variable is required.")
+                        sys.exit(1)
+                    
+                    try:
+                        google_drive_credentials_file = os.path.abspath(os.path.expanduser(google_drive_credentials_file))
+                        if not os.path.exists(google_drive_credentials_file):
+                            logger.error(f"Credentials file not found: {sanitize_path_for_logging(google_drive_credentials_file)}")
+                            sys.exit(1)
+                    except (OSError, ValueError) as e:
+                        logger.error(f"Invalid credentials file path: {sanitize_path_for_logging(str(e))}")
+                        sys.exit(1)
+
+                    archive_drive_client = GoogleDriveClient(google_drive_credentials_file)
+                    sanitized_folder_name = sanitize_folder_name(conversation_name)
+                    archive_folder_id = archive_drive_client.create_folder(
+                        sanitized_folder_name, os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() or None
+                    )
+                    
+                    if not archive_folder_id:
+                        logger.error(f"Failed to create/get folder for {conversation_name} during thread archiving")
+                        sys.exit(1)
+
                     search_query = args.search_query
                     if not search_query:
                         # Construct query
@@ -2942,7 +2967,7 @@ Total Messages: {len(history)}
                     start_dt = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.start_date else datetime.min.replace(tzinfo=timezone.utc)
                     end_dt = datetime.strptime(args.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) if args.end_date else datetime.max.replace(tzinfo=timezone.utc)
 
-                    historical_thread_messages = extract_historical_threads_via_search(
+                    extracted_threads = extract_historical_threads_via_search(
                         mcp_evaluate_script=mcp_evaluate_script,
                         mcp_click=mcp_click,
                         mcp_press_key=mcp_press_key,
@@ -2950,7 +2975,18 @@ Total Messages: {len(history)}
                         search_query=search_query,
                         export_date_range=(start_dt, end_dt)
                     )
-                    logger.info(f"Collected {len(historical_thread_messages)} messages from historical threads.")
+                    
+                    logger.info(f"Extracted {len(extracted_threads)} threads.")
+                    
+                    # Process threads: Archive individually and flatten for daily logs
+                    for thread_msgs in extracted_threads:
+                        # Archive individual thread
+                        if thread_msgs:
+                            archive_drive_client.upload_thread_doc(archive_folder_id, thread_msgs, conversation_name)
+                            # Add to flat list for daily log processing
+                            historical_thread_messages.extend(thread_msgs)
+                            
+                    logger.info(f"Flattened {len(historical_thread_messages)} messages from historical threads for daily logs.")
                 except Exception as e:
                     logger.error(f"Failed to extract historical threads: {e}", exc_info=True)
             else:

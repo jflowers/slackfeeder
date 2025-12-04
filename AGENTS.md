@@ -252,6 +252,9 @@ The bulk export feature (`--bulk-export`) automatically chunks large exports:
 
 ## DOM Extraction Workflow
 
+**⚠️ AGENT EXECUTION REQUIRED:**
+Browser-based exports (`--browser-export-dm`, `--extract-active-threads`, `--extract-historical-threads`) rely on active browser automation (MCP tools). They **cannot** be run standalone from a terminal. They must be executed by an AI Agent that can inject the necessary tools (`mcp_click`, `mcp_evaluate_script`, etc.).
+
 When extracting messages from Slack DOM using Cursor's MCP chrome-devtools tools:
 
 **⚠️ CRITICAL: Do NOT use `response_dom_extraction.json` file**

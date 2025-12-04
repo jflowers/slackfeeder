@@ -57,7 +57,7 @@ class TestExtractHistoricalThreads:
         )
 
         assert len(result) == 1
-        assert result[0]["text"] == "Test message"
+        assert result[0][0]["text"] == "Test message"
         
         # Should click next page
         self.mock_click.assert_any_call(uid="next_page_uid")
